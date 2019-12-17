@@ -58,7 +58,7 @@ option(USE_SIGNAL_HANDLER "Print stack traces on segfaults." ON)
 option(USE_TENSORRT "Enable inference optimization with TensorRT." OFF)
 option(USE_ASAN "Enable Clang/GCC ASAN sanitizers." OFF)
 option(ENABLE_TESTCOVERAGE "Enable compilation with test coverage metric output" OFF)
-option(USE_INT64_TENSOR_SIZE "Use int64_t to represent the total number of elements in a tensor" OFF)
+option(USE_INT64_TENSOR_SIZE "Use int64_t to represent the total number of elements in a tensor" ON)
 option(BUILD_CYTHON_MODULES "Build cython modules." OFF)
 
 message(STATUS "CMAKE_CROSSCOMPILING ${CMAKE_CROSSCOMPILING}")
