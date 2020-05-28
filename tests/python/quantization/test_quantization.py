@@ -23,7 +23,7 @@ import mxnet as mx
 import numpy as np
 from mxnet.gluon.model_zoo import vision
 from mxnet.test_utils import assert_almost_equal, assert_exception, rand_ndarray, rand_shape_nd, same, DummyIter
-from common import with_seed
+from common import with_seed, xfail_when_nonstandard_decimal_separator
 from mxnet.module import Module
 from mxnet.io import NDArrayIter
 import unittest
@@ -196,7 +196,7 @@ def test_requantize_int32_to_int8():
 
 @with_seed()
 def test_quantized_conv():
-    def check_quantized_conv(data_shape, kernel, num_filter, pad, stride, no_bias, qdtype):
+    def check_quantized_conv(data_shape, kernel, num_filter, pad, stride, dilate, no_bias, qdtype):
         if is_test_for_native_cpu():
             print('skipped testing quantized_conv for native cpu since it is not supported yet')
             return
@@ -207,14 +207,17 @@ def test_quantized_conv():
         elif qdtype == 'uint8' and is_test_for_gpu():
             print('skipped testing quantized_conv for gpu uint8 since it is not supported yet')
             return
+        elif is_test_for_gpu() and len(data_shape) != 4:
+            print('skipped testing quantized_conv for gpu 5d layout since it is not supported yet')
+            return
 
         # run fp32 conv
         data = mx.sym.Variable(name='data', shape=data_shape, dtype='float32')
-        conv2d = mx.sym.Convolution(data=data, kernel=kernel, num_filter=num_filter, pad=pad, stride=stride,
-                                    no_bias=no_bias, cudnn_off=False, name='conv2d')
-        arg_shapes, _, _ = conv2d.infer_shape(data=data_shape)
-        arg_names = conv2d.list_arguments()
-        conv_exe_fp32 = conv2d.simple_bind(ctx=mx.current_context(), grad_req='null')
+        conv = mx.sym.Convolution(data=data, kernel=kernel, num_filter=num_filter, pad=pad, stride=stride,
+                                  dilate=dilate, no_bias=no_bias, cudnn_off=False, name='conv')
+        arg_shapes, _, _ = conv.infer_shape(data=data_shape)
+        arg_names = conv.list_arguments()
+        conv_exe_fp32 = conv.simple_bind(ctx=mx.current_context(), grad_req='null')
         if qdtype == 'uint8':
             data_low = 0.0
             data_high = 127.0
@@ -222,12 +225,12 @@ def test_quantized_conv():
             data_low = -127.0
             data_high = 127.0
         conv_exe_fp32.arg_dict[arg_names[0]][:] = mx.nd.random.uniform(low=data_low, high=data_high,
-                                                                        shape=data_shape).astype('int32')
+                                                                       shape=data_shape).astype('int32')
         conv_exe_fp32.arg_dict[arg_names[1]][:] = mx.nd.random.uniform(low=-127.0, high=127.0,
-                                                                        shape=arg_shapes[1]).astype('int32')
+                                                                       shape=arg_shapes[1]).astype('int32')
         if not no_bias:
             conv_exe_fp32.arg_dict[arg_names[2]][:] = mx.nd.random.uniform(low=-127.0, high=127.0,
-                                                                            shape=arg_shapes[2]).astype('int32')
+                                                                           shape=arg_shapes[2]).astype('int32')
         output = conv_exe_fp32.forward()[0]
 
         # run quantized conv
@@ -237,16 +240,16 @@ def test_quantized_conv():
         max_data = mx.sym.Variable(name='max_data')
         min_weight = mx.sym.Variable(name='min_weight')
         max_weight = mx.sym.Variable(name='max_weight')
-        quantized_conv2d = mx.sym.contrib.quantized_conv(data=qdata, weight=qweight, min_data=min_data,
-                                                            max_data=max_data, min_weight=min_weight,
-                                                            max_weight=max_weight, kernel=kernel,
-                                                            num_filter=num_filter, pad=pad, stride=stride,
-                                                            no_bias=no_bias)
-        qarg_names = quantized_conv2d.list_arguments()
+        quantized_conv = mx.sym.contrib.quantized_conv(data=qdata, weight=qweight, min_data=min_data,
+                                                       max_data=max_data, min_weight=min_weight,
+                                                       max_weight=max_weight, kernel=kernel,
+                                                       num_filter=num_filter, pad=pad, stride=stride,
+                                                       dilate=dilate, no_bias=no_bias)
+        qarg_names = quantized_conv.list_arguments()
         type_dict = None
         if not no_bias:
             type_dict = {qarg_names[2]: 'int8'}
-        conv_exe_int8 = quantized_conv2d.simple_bind(ctx=mx.current_context(), type_dict=type_dict, grad_req='null')
+        conv_exe_int8 = quantized_conv.simple_bind(ctx=mx.current_context(), type_dict=type_dict, grad_req='null')
         conv_exe_int8.arg_dict[qarg_names[0]][:] = conv_exe_fp32.arg_dict[arg_names[0]].astype(qdtype)
         conv_exe_int8.arg_dict[qarg_names[1]][:] = conv_exe_fp32.arg_dict[arg_names[1]].astype('int8')
         quantized_range = 127.0
@@ -274,8 +277,12 @@ def test_quantized_conv():
             assert cond == 0
 
     for qdtype in ['int8', 'uint8']:
-        check_quantized_conv((3, 4, 28, 28), (3, 3), 128, (1, 1), (1, 1), True, qdtype)
-        check_quantized_conv((3, 4, 28, 28), (3, 3), 128, (1, 1), (1, 1), False, qdtype)
+        check_quantized_conv((3, 4, 28, 28), (3, 3), 128, (1, 1), (1, 1), (1, 1), True, qdtype)
+        check_quantized_conv((3, 4, 28, 28), (3, 3), 128, (1, 1), (1, 1), (1, 1), False, qdtype)
+        check_quantized_conv((1, 3, 4, 28, 28), (1, 3, 3), 128, (1, 1, 1), (1, 1, 1), (1, 1, 1), False, qdtype)
+        check_quantized_conv((1, 3, 4, 28, 28), (1, 3, 3), 128, (1, 1, 1), (1, 1, 1), (1, 1, 1), True, qdtype)
+        check_quantized_conv((1, 3, 4, 28, 28), (1, 3, 3), 128, (1, 1, 1), (1, 1, 1), (2, 2, 2), False, qdtype)
+        check_quantized_conv((1, 3, 4, 28, 28), (1, 3, 3), 128, (1, 1, 1), (1, 1, 1), (2, 2, 2), True, qdtype)
 
 
 @with_seed()
@@ -328,12 +335,11 @@ def test_quantized_elemwise_add():
         elemwise_add_int8_exe.arg_dict[qarg_names[4]][:] = data_low
         elemwise_add_int8_exe.arg_dict[qarg_names[5]][:] = data_high
         qoutput, min_range, max_range = elemwise_add_int8_exe.forward()
-        min_val = min_range.asnumpy().tolist()[0]
-        max_val = max_range.asnumpy().tolist()[0]
 
-        fp32_rslt = output.asnumpy()
-        int8_rslt = qoutput.asnumpy()*max_val/0x7fffffff
-        assert_almost_equal(int8_rslt, int8_rslt, atol = 1e-4)
+        int8_rslt = qoutput.astype(output.dtype)*max_range/0x7fffffff
+        diff = mx.nd.abs(output - int8_rslt)
+        cond = mx.nd.lesser(2, diff).sum().asscalar()
+        assert cond == 0
 
     for qtype in ['int8', 'uint8']:
         check_quantized_elemwise_add((4, 6), qtype)
@@ -341,6 +347,66 @@ def test_quantized_elemwise_add():
         check_quantized_elemwise_add((3, 4, 56, 56), qtype)
         check_quantized_elemwise_add((32, 56, 64, 11), qtype)
 
+@with_seed()
+def test_quantized_elemwise_mul():
+    def check_quantized_elemwise_mul(data_shape, qtype):
+        if is_test_for_native_cpu():
+            print('skipped testing quantized_elemwise_mul for native cpu since it is not supported yet')
+            return
+        elif qtype != 'int8':
+            print('skipped testing quantized_elemwise_mul for not supported data type')
+            return
+        elif is_test_for_gpu():
+            print('skipped testing quantized_elemwise_mul for gpu since it is not supported yet')
+            return
+
+        dataA = mx.sym.Variable(name='dataA', shape=data_shape, dtype='float32')
+        dataB = mx.sym.Variable(name='dataB', shape=data_shape, dtype='float32')
+        elemwise_mul_fp32 = mx.sym.elemwise_mul(dataA, dataB)
+        arg_names = elemwise_mul_fp32.list_arguments()
+        elemwise_mul_fp32_exe = elemwise_mul_fp32.simple_bind(ctx=mx.current_context(), grad_req='null')
+        if qtype == 'uint8':
+            data_low = 0.0
+            data_high = 255.0
+        else:
+            data_low = -127.0
+            data_high = 127.0
+
+        dataA_val = mx.nd.random.uniform(low=data_low, high=data_high, shape=data_shape).astype('int32')
+        dataB_val = mx.nd.random.uniform(low=data_low, high=data_high, shape=data_shape).astype('int32')
+        elemwise_mul_fp32_exe.arg_dict[arg_names[0]][:] = dataA_val
+
+        elemwise_mul_fp32_exe.arg_dict[arg_names[1]][:] = dataB_val
+
+        output = elemwise_mul_fp32_exe.forward()[0]
+
+        qdataA = mx.sym.Variable(name='qdataA', shape=data_shape, dtype=qtype)
+        qdataB = mx.sym.Variable(name='qdataB', shape=data_shape, dtype=qtype)
+        min_dataA = mx.sym.Variable(name='min_dataA')
+        max_dataA = mx.sym.Variable(name='max_dataA')
+        min_dataB = mx.sym.Variable(name='min_dataB')
+        max_dataB = mx.sym.Variable(name='max_dataB')
+        quantized_elemwise_mul = mx.sym.contrib.quantized_elemwise_mul(qdataA, qdataB, min_dataA, max_dataA, min_dataB, max_dataB)
+        elemwise_mul_int8_exe = quantized_elemwise_mul.simple_bind(ctx=mx.current_context(), grad_req='null')
+        qarg_names = quantized_elemwise_mul.list_arguments()
+        elemwise_mul_int8_exe.arg_dict[qarg_names[0]][:] = elemwise_mul_fp32_exe.arg_dict[arg_names[0]].astype(qtype)
+        elemwise_mul_int8_exe.arg_dict[qarg_names[1]][:] = elemwise_mul_fp32_exe.arg_dict[arg_names[1]].astype(qtype)
+        quantized_range = 127.0
+        elemwise_mul_int8_exe.arg_dict[qarg_names[2]][:] = data_low
+        elemwise_mul_int8_exe.arg_dict[qarg_names[3]][:] = data_high
+        elemwise_mul_int8_exe.arg_dict[qarg_names[4]][:] = data_low
+        elemwise_mul_int8_exe.arg_dict[qarg_names[5]][:] = data_high
+        qoutput, min_range, max_range = elemwise_mul_int8_exe.forward()
+
+        fp32_rslt = output.asnumpy()
+        int8_rslt = qoutput.astype(output.dtype)
+        assert_almost_equal(fp32_rslt, int8_rslt, atol = 1e-4)
+
+    for qtype in ['int8', 'uint8']:
+        check_quantized_elemwise_mul((4, 6), qtype)
+        check_quantized_elemwise_mul((13, 74, 52), qtype)
+        check_quantized_elemwise_mul((3, 4, 56, 56), qtype)
+        check_quantized_elemwise_mul((32, 56, 64, 11), qtype)
 
 @with_seed()
 def test_quantized_pooling():
@@ -350,6 +416,9 @@ def test_quantized_pooling():
             return
         elif qdtype == 'uint8' and is_test_for_gpu():
             print('skipped testing quantized_pooling for gpu uint8 since it is not supported yet')
+            return
+        elif is_test_for_gpu() and len(data_shape) != 4:
+            print('skipped testing quantized_pooling for gpu 5d layout since it is not supported yet')
             return
 
         data = mx.sym.Variable(name='data', shape=data_shape, dtype='float32')
@@ -397,11 +466,19 @@ def test_quantized_pooling():
         check_quantized_pooling((3, 4, 56, 56), (3, 3), 'max', (0, 0), (2, 2), True, qdtype)
         check_quantized_pooling((3, 512, 7, 7), (7, 7), 'avg', (0, 0), (1, 1), False, qdtype)
         check_quantized_pooling((3, 512, 7, 7), (7, 7), 'avg', (0, 0), (1, 1), True, qdtype)
+        check_quantized_pooling((3, 4, 3, 56, 56), (1, 3, 3), 'max', (0, 0, 0), (1, 2, 2), False, qdtype)
+        check_quantized_pooling((3, 4, 3, 56, 56), (1, 3, 3), 'max', (0, 0, 0), (1, 2, 2), True, qdtype)
+        check_quantized_pooling((3, 512, 3, 7, 7), (1, 7, 7), 'avg', (0, 0, 0), (1, 2, 2), False, qdtype)
+        check_quantized_pooling((3, 512, 3, 7, 7), (1, 7, 7), 'avg', (0, 0, 0), (1, 2, 2), True, qdtype)
 
         check_quantized_pooling((3, 4, 56, 56), (3, 3), 'max', (0, 0), (2, 2), False, qdtype, 'full')
         check_quantized_pooling((3, 4, 56, 56), (3, 3), 'max', (0, 0), (2, 2), True, qdtype, 'full')
         check_quantized_pooling((3, 512, 7, 7), (7, 7), 'avg', (0, 0), (1, 1), False, qdtype, 'full')
         check_quantized_pooling((3, 512, 7, 7), (7, 7), 'avg', (0, 0), (1, 1), True, qdtype, 'full')
+        check_quantized_pooling((3, 4, 3, 56, 56), (1, 3, 3), 'max', (0, 0, 0), (1, 2, 2), False, qdtype, 'full')
+        check_quantized_pooling((3, 4, 3, 56, 56), (1, 3, 3), 'max', (0, 0, 0), (1, 2, 2), True, qdtype, 'full')
+        check_quantized_pooling((3, 512, 3, 7, 7), (1, 7, 7), 'avg', (0, 0, 0), (1, 2, 2), False, qdtype, 'full')
+        check_quantized_pooling((3, 512, 3, 7, 7), (1, 7, 7), 'avg', (0, 0, 0), (1, 2, 2), True, qdtype, 'full')
 
 
 @with_seed()
@@ -793,6 +870,7 @@ def get_fp32_sym_with_multiple_outputs(length=1):
                               out_grad=False, preserve_shape=False, use_ignore=False, name='softmax')
     return sym
 
+@xfail_when_nonstandard_decimal_separator
 @with_seed()
 def test_quantize_model():
     def check_quantize_model(qdtype):
@@ -1005,7 +1083,7 @@ def test_quantize_model_with_forward():
                     else:
                         excluded_sym_names = excluded_names + optional_names
             if name == 'sym4':
-                excluded_op_names += ['elemwise_add']
+                excluded_op_names += ['elemwise_add', 'elemwise_mul']
 
             qsym, qarg_params, qaux_params = mx.contrib.quant.quantize_model(sym=s,
                                                                              arg_params=arg_params,
@@ -1078,19 +1156,22 @@ def test_quantize_gluon_with_forward():
         quantized_resnet18_v1.hybridize(static_alloc=True, static_shape=True)
         quantized_resnet18_v1(random_data)
 
-        quantized_resnet18_v1 = mx.contrib.quant.quantize_net(resnet18_v1, quantized_dtype=qdtype,
-                                                              exclude_layers=None,
-                                                              exclude_layers_match=excluded_names_match,
-                                                              calib_data=calib_data,
-                                                              calib_mode='naive',
-                                                              num_calib_examples=num_calib_examples,
-                                                              ctx=mx.current_context())
-        quantized_resnet18_v1.hybridize(static_alloc=True, static_shape=True)
-        quantized_resnet18_v1(random_data)
+        for mode in ['naive', 'entropy']:
+            qdtype = qdtype if mode is 'naive' else 'auto'
+            quantized_resnet18_v1 = mx.contrib.quant.quantize_net(resnet18_v1, quantized_dtype=qdtype,
+                                                                  exclude_layers=None,
+                                                                  exclude_layers_match=excluded_names_match,
+                                                                  calib_data=calib_data,
+                                                                  calib_mode=mode,
+                                                                  num_calib_examples=num_calib_examples,
+                                                                  ctx=mx.current_context())
+            quantized_resnet18_v1.hybridize(static_alloc=True, static_shape=True)
+            quantized_resnet18_v1(random_data)
 
     for qdtype in ['int8', 'uint8']:
         check_quantize_net(qdtype)
 
+@xfail_when_nonstandard_decimal_separator
 @with_seed()
 def test_quantize_sym_with_calib():
     if is_test_for_native_cpu():
@@ -1174,7 +1255,3 @@ def test_get_optimal_thresholds():
         assert 'layer1' in th_dict
         assert_almost_equal(np.array([th_dict['layer1'][1]]), expected_threshold, rtol=1e-2, atol=1e-4)
 
-
-if __name__ == "__main__":
-    import nose
-    nose.runmodule()

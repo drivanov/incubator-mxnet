@@ -30,7 +30,8 @@ to communicate parameters between workers. There is no dedicated server and the 
 between workers does not depend on the number of workers. Therefore, it scales well in the case where 
 there are a large number of workers and network bandwidth is the bottleneck.
 
-# Install
+# Setup
+
 ## Install MXNet
 ```bash
 $ pip install mxnet
@@ -52,6 +53,10 @@ Steps to install Open MPI are listed [here](https://www.open-mpi.org/faq/?catego
 
 **Note**: Open MPI 3.1.3 has an issue that may cause hangs.  It is recommended
 to downgrade to Open MPI 3.1.2 or upgrade to Open MPI 4.0.0.
+
+## On Kubernetes
+
+Distributed MXNet jobs with Horovod can be submitted to a Kubernetes cluster via [Kubeflow MPI Operator](https://github.com/kubeflow/mpi-operator). Please refer to [this example](https://github.com/kubeflow/mpi-operator/tree/master/examples/mxnet) for details, including the Dockerfile with all the dependencies mentioned in previous sections, distributed training Python script based on Horovod, and the YAML configuration file that can be used for submitting a job on a Kubernetes cluster.
 
 # Usage
 
@@ -199,3 +204,11 @@ $ mpirun -np 8 \
     -mca pml ob1 -mca btl ^openib \
     python train.py
 ```
+
+## Tuning Horovod Performance
+
+1. To analyse horovod performance, [horovod timeline](https://github.com/horovod/horovod/blob/master/docs/timeline.rst) is a handy tool to trace and visualize the time spent on horovod operations. 
+
+2. A few tuning knobs affect horovod runtime performance (explained [here](https://github.com/horovod/horovod/blob/master/docs/tensor-fusion.rst)). Apart from `HOROVOD_FUSION_THRESHOLD`, sometimes we find increasing `HOROVOD_CYCLE_TIME` (up to 100 ms), changing [`NCCL_ALGO`](https://docs.nvidia.com/deeplearning/sdk/nccl-developer-guide/docs/env.html#nccl-algo), and [`NCCL_MIN_NCHANNELS`](https://docs.nvidia.com/deeplearning/sdk/nccl-developer-guide/docs/env.html#nccl-min-nchannels) improves performance.
+
+3. If you are running horovod on AWS, you can potentially leverage [EFA](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/efa.html) if your instance supports 100 Gb/s networking. To use EFA, you can refer to the [official documentation](https://docs.aws.amazon.com/eu_us/AWSEC2/latest/UserGuide/efa-start-nccl-dlami.html) for the setup instructions, and the environment variables (`-x FI_PROVIDER`, `-x FI_EFA_TX_MIN_CREDITS`) to set. Besides, you need to make sure EFA library is included in the shared library path (`-x LD_LIBRARY_PATH`).

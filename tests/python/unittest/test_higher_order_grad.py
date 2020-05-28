@@ -22,12 +22,11 @@ from functools import reduce
 from operator import mul
 import random
 
-from nose.tools import ok_
-
-from common import with_seed
+from common import with_seed, xfail_when_nonstandard_decimal_separator
 import mxnet
 from mxnet import nd, autograd, gluon
-from mxnet.test_utils import assert_almost_equal, random_arrays, rand_shape_nd, same
+from mxnet.test_utils import (
+    assert_almost_equal, random_arrays, random_uniform_arrays, rand_shape_nd, same)
 
 
 @with_seed()
@@ -121,7 +120,7 @@ def test_tanh():
         return nd.tanh(x)
 
     def grad_op(x):
-        return 1 / nd.cosh(x)**2
+        return 1 - tanh(x)**2
 
     def grad_grad_op(x):
         return -2 * tanh(x) * grad_op(x)
@@ -129,10 +128,42 @@ def test_tanh():
     for dim in range(1, 5):
         shape = rand_shape_nd(dim)
         array = random_arrays(shape)
+        check_nth_order_unary(array, tanh, grad_op, 1, rtol=1e-6, atol=1e-6)
         check_second_order_unary(
-            array, tanh, grad_grad_op, rtol=1e-6, atol=1e-6)
+            array, tanh, grad_grad_op, rtol=1e-6, atol=1e-5)
 
 
+@with_seed()
+def test_arcsin():
+    def arcsin(x):
+        return nd.arcsin(x)
+
+    def grad_grad_op(x):
+        return x / nd.sqrt((1-x**2)**3)
+
+    for dim in range(1, 5):
+        shape = rand_shape_nd(dim)
+        # Domain of arcsin is [-1, 1]
+        array = random_uniform_arrays(shape, low=-0.99, high=0.99)[0]
+        check_second_order_unary(array, arcsin, grad_grad_op)
+
+
+@with_seed()
+def test_arccos():
+    def arccos(x):
+        return nd.arccos(x)
+
+    def grad_grad_op(x):
+        return -x / nd.sqrt((1-x**2)**3)
+
+    for dim in range(1, 5):
+        shape = rand_shape_nd(dim)
+        # Domain of arccos is [-1, 1]
+        array = random_uniform_arrays(shape, low=-0.99, high=0.99)[0]
+        check_second_order_unary(array, arccos, grad_grad_op)
+
+
+@xfail_when_nonstandard_decimal_separator
 @with_seed()
 def test_arctan():
     def arctan(x):
@@ -184,6 +215,7 @@ def test_arccosh():
         check_second_order_unary(array, arccosh, grad_grad_op)
 
 
+@xfail_when_nonstandard_decimal_separator
 @with_seed()
 def test_arctanh():
     def arctanh(x):
@@ -194,7 +226,8 @@ def test_arctanh():
 
     for dim in range(1, 5):
         shape = rand_shape_nd(dim)
-        array = random_arrays(shape)
+        # Domain of arctanh is (-1, 1)
+        array = random_uniform_arrays(shape, low=-0.99, high=0.99)[0]
         check_second_order_unary(array, arctanh, grad_grad_op)
 
 
@@ -245,6 +278,7 @@ def test_log():
         check_nth_order_unary(array, log, [grad_op, grad_grad_op], [1, 2])
 
 
+@xfail_when_nonstandard_decimal_separator
 @with_seed()
 def test_log2():
     def log2(x):
@@ -259,6 +293,7 @@ def test_log2():
         check_second_order_unary(array, log2, grad_grad_op)
 
 
+@xfail_when_nonstandard_decimal_separator
 @with_seed()
 def test_log10():
     def log10(x):
@@ -273,6 +308,7 @@ def test_log10():
         check_second_order_unary(array, log10, grad_grad_op)
 
 
+@xfail_when_nonstandard_decimal_separator
 @with_seed()
 def test_square():
     def grad_grad_op(x):
@@ -384,6 +420,7 @@ def test_sigmoid():
         check_nth_order_unary(array, sigmoid, grad_grad_op, 2)
 
 
+@xfail_when_nonstandard_decimal_separator
 @with_seed()
 def test_sqrt():
     def sqrt(x):
@@ -422,6 +459,48 @@ def test_cbrt():
         # Only positive numbers
         assert((array > 0).all())
         check_second_order_unary(array, cbrt, grad_grad_op)
+
+
+@xfail_when_nonstandard_decimal_separator
+@with_seed()
+def test_rsqrt():
+    def rsqrt(x):
+        return nd.rsqrt(x)
+
+    def grad_grad_op(x):
+        return 3/(4 * nd.sqrt(x**5))
+
+    sigma = random.randint(25, 100)
+    mu = random.randint(500, 1000)
+
+    for dim in range(1, 5):
+        shape = rand_shape_nd(dim)
+        array = random_arrays(shape)
+        array = sigma * array + mu
+        # Only positive numbers
+        assert((array > 0).all())
+        check_second_order_unary(array, rsqrt, grad_grad_op)
+
+
+@xfail_when_nonstandard_decimal_separator
+@with_seed()
+def test_rcbrt():
+    def rcbrt(x):
+        return nd.rcbrt(x)
+
+    def grad_grad_op(x):
+        return 4/(9 * nd.cbrt(x**7))
+
+    sigma = random.randint(25, 100)
+    mu = random.randint(500, 1000)
+
+    for dim in range(1, 5):
+        shape = rand_shape_nd(dim)
+        array = random_arrays(shape)
+        array = sigma * array + mu
+        # Only positive numbers
+        assert((array > 0).all())
+        check_second_order_unary(array, rcbrt, grad_grad_op)
 
 
 def check_second_order_unary(x, op, grad_grad_op, rtol=None, atol=None):
@@ -575,18 +654,18 @@ def test_dense_backward_flatten():
         w_grad_grad_e = nd.dot(o_y, o_x_grad, transpose_a=True)
         x_grad_e = nd.dot(o_y, w)
         x_grad_grad_e = nd.dot(o_y, o_w_grad)
-        ok_(w_grad.shape == w.shape)
-        ok_(w_grad_grad.shape == w.shape)
-        ok_(x_grad.shape == x.shape)
-        ok_(x_grad_grad.shape == x.shape)
+        assert w_grad.shape == w.shape
+        assert w_grad_grad.shape == w.shape
+        assert x_grad.shape == x.shape
+        assert x_grad_grad.shape == x.shape
         w_grad_check = same(flatten2d_right(w_grad), flatten2d_right(w_grad_e))
         w_grad_grad_check = same(flatten2d_right(w_grad_grad), flatten2d_right(w_grad_grad_e))
         x_grad_check = same(flatten2d_right(x_grad), flatten2d_right(x_grad_e))
         x_grad_grad_check = same(flatten2d_right(x_grad_grad), flatten2d_right(x_grad_grad_e))
-        ok_(x_grad_check)
-        ok_(w_grad_check)
-        ok_(x_grad_grad_check)
-        ok_(w_grad_grad_check)
+        assert x_grad_check
+        assert w_grad_check
+        assert x_grad_grad_check
+        assert w_grad_grad_check
 
 @with_seed()
 def test_dense_backward_no_flatten():
@@ -628,12 +707,8 @@ def test_dense_backward_no_flatten():
         w_grad_grad_check = same(flatten2d_left(w_grad_grad), flatten2d_left(w_grad_grad_e))
         x_grad_check = same(flatten2d_left(x_grad), flatten2d_left(x_grad_e))
         x_grad_grad_check = same(flatten2d_left(x_grad_grad), flatten2d_left(x_grad_grad_e))
-        ok_(x_grad_check)
-        ok_(w_grad_check)
-        ok_(x_grad_grad_check)
-        ok_(w_grad_grad_check)
+        assert x_grad_check
+        assert w_grad_check
+        assert x_grad_grad_check
+        assert w_grad_grad_check
 
-
-if __name__ == '__main__':
-    import nose
-    nose.runmodule()

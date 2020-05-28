@@ -27,42 +27,53 @@ GTEST_HEADERS = $(GTEST_DIR)/include/gtest/*.h \
 
 TEST_CFLAGS = -Itests/cpp/include -Isrc $(CFLAGS)
 TEST_LDFLAGS = $(LDFLAGS) -Llib -lmxnet
+TEST_CPPFLAGS = -Icpp-package/include
 
 ifeq ($(USE_BREAKPAD), 1)
 TEST_CFLAGS  += -I/usr/local/include/breakpad
 TEST_LDFLAGS += -lbreakpad_client -lbreakpad
 endif
 
+TEST_LIB_DEP = gtest.a
+ifeq ($(USE_MKLDNN), 1)
+	TEST_LIB_DEP += $(MKLDNNROOT)/lib/libdnnl.a
+endif
+
 .PHONY: runtest testclean
 
 gtest-all.o : $(GTEST_SRCS_)
-	$(CXX) $(CPPFLAGS) -I$(GTEST_INC) -I$(GTEST_DIR) $(CXXFLAGS) -c $(GTEST_DIR)/src/gtest-all.cc
+	$(CXX) -std=c++17 $(CPPFLAGS) -I$(GTEST_INC) -I$(GTEST_DIR) $(CXXFLAGS) -c $(GTEST_DIR)/src/gtest-all.cc
 
 gtest.a : gtest-all.o
 	$(AR) $(ARFLAGS) $@ $^
 
 build/tests/cpp/%.o : tests/cpp/%.cc | mkldnn
 	@mkdir -p $(@D)
-	$(CXX) -std=c++11 $(TEST_CFLAGS) -I$(GTEST_INC) -MM -MT tests/cpp/$* $< > build/tests/cpp/$*.d
-	$(CXX) -c -std=c++11 $(TEST_CFLAGS) -I$(GTEST_INC) -o build/tests/cpp/$*.o $(filter %.cc %.a, $^)
+	$(CXX) -std=c++17 $(TEST_CFLAGS) -I$(GTEST_INC) -MM -MT tests/cpp/$* $< > build/tests/cpp/$*.d
+	$(CXX) -c -std=c++17 $(TEST_CFLAGS) -I$(GTEST_INC) -o build/tests/cpp/$*.o $(filter %.cc %.a, $^)
 
 build/tests/cpp/operator/%.o : tests/cpp/operator/%.cc | mkldnn
 	@mkdir -p $(@D)
-	$(CXX) -std=c++11 $(TEST_CFLAGS) -I$(GTEST_INC) -MM -MT tests/cpp/operator/$* $< > build/tests/cpp/operator/$*.d
-	$(CXX) -c -std=c++11 $(TEST_CFLAGS) -I$(GTEST_INC) -o build/tests/cpp/operator/$*.o $(filter %.cc %.a, $^)
+	$(CXX) -std=c++17 $(TEST_CFLAGS) -I$(GTEST_INC) -MM -MT tests/cpp/operator/$* $< > build/tests/cpp/operator/$*.d
+	$(CXX) -c -std=c++17 $(TEST_CFLAGS) -I$(GTEST_INC) -o build/tests/cpp/operator/$*.o $(filter %.cc %.a, $^)
 
 build/tests/cpp/storage/%.o : tests/cpp/storage/%.cc | mkldnn
 	@mkdir -p $(@D)
-	$(CXX) -std=c++11 $(TEST_CFLAGS) -I$(GTEST_INC) -MM -MT tests/cpp/storage/$* $< > build/tests/cpp/storage/$*.d
-	$(CXX) -c -std=c++11 $(TEST_CFLAGS) -I$(GTEST_INC) -o build/tests/cpp/storage/$*.o $(filter %.cc %.a, $^)
+	$(CXX) -std=c++17 $(TEST_CFLAGS) -I$(GTEST_INC) -MM -MT tests/cpp/storage/$* $< > build/tests/cpp/storage/$*.d
+	$(CXX) -c -std=c++17 $(TEST_CFLAGS) -I$(GTEST_INC) -o build/tests/cpp/storage/$*.o $(filter %.cc %.a, $^)
 
 build/tests/cpp/engine/%.o : tests/cpp/engine/%.cc | mkldnn
 	@mkdir -p $(@D)
-	$(CXX) -std=c++11 $(TEST_CFLAGS) -I$(GTEST_INC) -MM -MT tests/cpp/engine/$* $< > build/tests/cpp/engine/$*.d
-	$(CXX) -c -std=c++11 $(TEST_CFLAGS) -I$(GTEST_INC) -o build/tests/cpp/engine/$*.o $(filter %.cc %.a, $^)
+	$(CXX) -std=c++17 $(TEST_CFLAGS) -I$(GTEST_INC) -MM -MT tests/cpp/engine/$* $< > build/tests/cpp/engine/$*.d
+	$(CXX) -c -std=c++17 $(TEST_CFLAGS) -I$(GTEST_INC) -o build/tests/cpp/engine/$*.o $(filter %.cc %.a, $^)
 
-$(TEST): $(TEST_OBJ) lib/libmxnet.so gtest.a
-	$(CXX) -std=c++11 $(TEST_CFLAGS) -I$(GTEST_INC) -o $@ $^ $(TEST_LDFLAGS)
+build/tests/cpp/thread_safety/%.o : tests/cpp/thread_safety/%.cc | mkldnn
+	@mkdir -p $(@D)
+	$(CXX) -std=c++17 $(TEST_CFLAGS) $(TEST_CPPFLAGS) -I$(GTEST_INC) -MM -MT tests/cpp/thread_safety/$* $< > build/tests/cpp/thread_safety/$*.d
+	$(CXX) -c -std=c++17 $(TEST_CFLAGS) $(TEST_CPPFLAGS) -I$(GTEST_INC) -o build/tests/cpp/thread_safety/$*.o $(filter %.cc %.a, $^)
+
+$(TEST): $(TEST_OBJ) lib/libmxnet.so $(TEST_LIB_DEP)
+	$(CXX) -std=c++17 $(TEST_CFLAGS) -I$(GTEST_INC) -o $@ $^ $(TEST_LDFLAGS)
 
 runtest: $(TEST)
 	LD_LIBRARY_PATH=$(shell pwd)/lib:$(LD_LIBRARY_PATH) $(TEST)
@@ -74,3 +85,4 @@ testclean:
 -include build/tests/cpp/operator/*.d
 -include build/tests/cpp/storage/*.d
 -include build/tests/cpp/engine/*.d
+-include build/tests/cpp/thread_safety/*.d

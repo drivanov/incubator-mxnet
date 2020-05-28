@@ -81,6 +81,14 @@ typedef void *ExecutorHandle;
 typedef void *DataIterCreator;
 /*! \brief handle to a DataIterator */
 typedef void *DataIterHandle;
+/*! \brief handle a dataset creator */
+typedef void *DatasetCreator;
+/*! \brief handle to a Dataset */
+typedef void *DatasetHandle;
+/*! \brief handle to a BatchifyFunction creator*/
+typedef void *BatchifyFunctionCreator;
+/*! \brief handle to a BatchifyFunction */
+typedef void *BatchifyFunctionHandle;
 /*! \brief handle to KVStore */
 typedef void *KVStoreHandle;
 /*! \brief handle to RecordIO */
@@ -234,9 +242,10 @@ MXNET_DLL const char *MXGetLastError();
 /*!
  * \brief Load library dynamically
  * \param path to the library .so file
+ * \param 0 for quiet, 1 for verbose
  * \return 0 when success, -1 when failure happens.
  */
-MXNET_DLL int MXLoadLib(const char *path);
+MXNET_DLL int MXLoadLib(const char *path, unsigned verbose);
 
 /*!
  * \brief Get list of features supported on the runtime
@@ -312,6 +321,13 @@ MXNET_DLL int MXSetProcessProfilerState(int state, int profile_process,
  * \return 0 when success, -1 when failure happens.
  */
 MXNET_DLL int MXSetProfilerState(int state);
+
+/*!
+ * \brief Set the scope of profiler for current process
+ * \param scope indicate the working scope of profiler
+ * \return 0 when success, -1 when failure happens.
+ */
+MXNET_DLL int MXSetProfilerScope(const char* scope);
 
 /*!
  * \brief Save profile and stop profiler
@@ -585,6 +601,8 @@ MXNET_DLL int MXNDArrayCreate(const uint32_t *shape,
 
 /*!
  * \brief create a NDArray with specified shape and data type
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=0 (by default)
  * \param shape the pointer to the shape
  * \param ndim the dimension of the shape
  * \param dev_type device type, specify device we want to take
@@ -603,6 +621,20 @@ MXNET_DLL int MXNDArrayCreateEx(const uint32_t *shape,
                                 int dtype,
                                 NDArrayHandle *out);
 
+/*!
+ * \brief create a NDArray with specified shape and data type
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=1 (not default) i.e. Large Tensor Support
+ * \param shape the pointer to int64_t shape
+ * \param ndim the dimension of the shape
+ * \param dev_type device type, specify device we want to take
+ * \param dev_id the device id of the specific device
+ * \param delay_alloc whether to delay allocation until
+ *    the narray is first mutated
+ * \param dtype data type of created array
+ * \param out the returning handle
+ * \return 0 when success, -1 when failure happens
+ */
 MXNET_DLL int MXNDArrayCreateEx64(const int64_t *shape,
                                   int ndim,
                                   int dev_type,
@@ -613,6 +645,8 @@ MXNET_DLL int MXNDArrayCreateEx64(const int64_t *shape,
 
 /*!
  * \brief create an empty sparse NDArray with specified shape and data type
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=0 (by default)
  * \param storage_type the storage type of the ndarray
  * \param shape the pointer to the shape
  * \param ndim the dimension of the shape
@@ -641,6 +675,25 @@ MXNET_DLL int MXNDArrayCreateSparseEx(int storage_type,
                                       const uint32_t *aux_shape,
                                       NDArrayHandle *out);
 
+/*!
+ * \brief create an empty sparse NDArray with specified shape and data type
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=1 (not default) i.e. Large Tensor Support
+ * \param storage_type the storage type of the ndarray
+ * \param shape the pointer to the shape
+ * \param ndim the dimension of the shape
+ * \param dev_type device type, specify device we want to take
+ * \param dev_id the device id of the specific device
+ * \param delay_alloc whether to delay allocation until
+ *        the narray is first mutated
+ * \param dtype data type of created array
+ * \param num_aux the number of aux data to support this ndarray
+ * \param aux_type data type of the aux data for the created array
+ * \param aux_ndims the dimension of the shapes of aux data
+ * \param aux_shape the shapes of aux data
+ * \param out the returning handle
+ * \return 0 when success, -1 when failure happens
+ */
 MXNET_DLL int MXNDArrayCreateSparseEx64(int storage_type,
                                         const int64_t *shape,
                                         int ndim,
@@ -723,7 +776,7 @@ MXNET_DLL int MXNDArrayLoadFromBuffer(const void *ndarray_buffer,
                                       const char*** out_names);
 
 /*!
- * \brief Perform a synchronize copy from a continugous CPU memory region.
+ * \brief Perform a synchronize copy from a contiguous CPU memory region.
  *
  *  This function will call WaitToWrite before the copy is performed.
  *  This is useful to copy data from existing memory region that are
@@ -737,7 +790,7 @@ MXNET_DLL int MXNDArraySyncCopyFromCPU(NDArrayHandle handle,
                                        const void *data,
                                        size_t size);
 /*!
- * \brief Perform a synchronize copyto a continugous CPU memory region.
+ * \brief Perform a synchronize copyto a contiguous CPU memory region.
  *
  *  This function will call WaitToRead before the copy is performed.
  *  This is useful to copy data from existing memory region that are
@@ -768,6 +821,7 @@ MXNET_DLL int MXNDArraySyncCopyFromNDArray(NDArrayHandle handle_dst,
  *    Otherwise basic check, O(1) operations
  */
 MXNET_DLL int MXNDArraySyncCheckFormat(NDArrayHandle handle, const bool full_check);
+
 /*!
  * \brief Wait until all the pending writes with respect NDArray are finished.
  *  Always call this before read data out synchronizely.
@@ -775,6 +829,7 @@ MXNET_DLL int MXNDArraySyncCheckFormat(NDArrayHandle handle, const bool full_che
  * \return 0 when success, -1 when failure happens
  */
 MXNET_DLL int MXNDArrayWaitToRead(NDArrayHandle handle);
+
 /*!
  * \brief Wait until all the pending read/write with respect NDArray are finished.
  *  Always call this before write data into NDArray synchronizely.
@@ -782,20 +837,25 @@ MXNET_DLL int MXNDArrayWaitToRead(NDArrayHandle handle);
  * \return 0 when success, -1 when failure happens
  */
 MXNET_DLL int MXNDArrayWaitToWrite(NDArrayHandle handle);
+
 /*!
  * \brief wait until all delayed operations in
  *   the system is completed
  * \return 0 when success, -1 when failure happens
  */
 MXNET_DLL int MXNDArrayWaitAll();
+
 /*!
  * \brief free the narray handle
  * \param handle the handle to be freed
  * \return 0 when success, -1 when failure happens
  */
 MXNET_DLL int MXNDArrayFree(NDArrayHandle handle);
+
 /*!
  * \brief Slice the NDArray along axis 0.
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=0 (by default)
  * \param handle the handle to the NDArray
  * \param slice_begin The beginning index of slice
  * \param slice_end The ending index of slice
@@ -807,6 +867,16 @@ MXNET_DLL int MXNDArraySlice(NDArrayHandle handle,
                              uint32_t slice_end,
                              NDArrayHandle *out);
 
+/*!
+ * \brief Slice the NDArray along axis 0.
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=1 (not default) i.e. Large Tensor Support
+ * \param handle the handle to the NDArray
+ * \param slice_begin The beginning index of slice
+ * \param slice_end The ending index of slice
+ * \param out The NDArrayHandle of sliced NDArray
+ * \return 0 when success, -1 when failure happens
+ */
 MXNET_DLL int MXNDArraySlice64(NDArrayHandle handle,
                                int64_t slice_begin,
                                int64_t slice_end,
@@ -814,6 +884,8 @@ MXNET_DLL int MXNDArraySlice64(NDArrayHandle handle,
 
 /*!
  * \brief Index the NDArray along axis 0.
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=0 (by default)
  * \param handle the handle to the NDArray
  * \param idx the index
  * \param out The NDArrayHandle of output NDArray
@@ -823,6 +895,15 @@ MXNET_DLL int MXNDArrayAt(NDArrayHandle handle,
                           uint32_t idx,
                           NDArrayHandle *out);
 
+/*!
+ * \brief Index the NDArray along axis 0.
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=1 (not default) i.e. Large Tensor Support
+ * \param handle the handle to the NDArray
+ * \param idx the index
+ * \param out The NDArrayHandle of output NDArray
+ * \return 0 when success, -1 when failure happens
+ */
 MXNET_DLL int MXNDArrayAt64(NDArrayHandle handle,
                             int64_t idx,
                             NDArrayHandle *out);
@@ -871,12 +952,10 @@ MXNET_DLL int MXNDArrayGetShape(NDArrayHandle handle,
                                 uint32_t *out_dim,
                                 const uint32_t **out_pdata);
 
-MXNET_DLL int MXNDArrayGetShape64(NDArrayHandle handle,
-                                  int *out_dim,
-                                  const int64_t **out_pdata);
-
 /*!
  * \brief get the shape of the array
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=0 (by default)
  * \param handle the handle to the narray
  * \param out_dim the output dimension
  * \param out_pdata pointer holder to get data pointer of the shape
@@ -886,6 +965,15 @@ MXNET_DLL int MXNDArrayGetShapeEx(NDArrayHandle handle,
                                   int *out_dim,
                                   const int **out_pdata);
 
+/*!
+ * \brief get the shape of the array
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=1 (not default) i.e. Large Tensor Support
+ * \param handle the handle to the narray
+ * \param out_dim the output dimension
+ * \param out_pdata pointer holder to get data pointer of the shape
+ * \return 0 when success, -1 when failure happens
+ */
 MXNET_DLL int MXNDArrayGetShapeEx64(NDArrayHandle handle,
                                     int *out_dim,
                                     const int64_t **out_pdata);
@@ -964,6 +1052,8 @@ MXNET_DLL int MXNDArrayGetDType(NDArrayHandle handle,
 
 /*!
  * \brief get the type of the ith aux data in NDArray
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=0 (by default)
  * \param handle the handle to the narray
  * \param i the index of the aux data
  * \param out_type pointer holder to get type of aux data
@@ -973,12 +1063,23 @@ MXNET_DLL int MXNDArrayGetAuxType(NDArrayHandle handle,
                                   uint32_t i,
                                   int *out_type);
 
+/*!
+ * \brief get the type of the ith aux data in NDArray
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=1 (not default) i.e. Large Tensor Support
+ * \param handle the handle to the narray
+ * \param i the index of the aux data
+ * \param out_type pointer holder to get type of aux data
+ * \return 0 when success, -1 when failure happens
+ */
 MXNET_DLL int MXNDArrayGetAuxType64(NDArrayHandle handle,
                                     int64_t i,
                                     int *out_type);
 
 /*!
  * \brief Get a deep copy of the ith aux data blob
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=0 (by default)
  * in the form of an NDArray of default storage type.
  * This function blocks. Do not use it in performance critical code.
  */
@@ -986,6 +1087,13 @@ MXNET_DLL int MXNDArrayGetAuxNDArray(NDArrayHandle handle,
                                      uint32_t i,
                                      NDArrayHandle *out);
 
+/*!
+ * \brief Get a deep copy of the ith aux data blob
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=1 (not default) i.e. Large Tensor Support
+ * in the form of an NDArray of default storage type.
+ * This function blocks. Do not use it in performance critical code.
+ */
 MXNET_DLL int MXNDArrayGetAuxNDArray64(NDArrayHandle handle,
                                        int64_t i,
                                        NDArrayHandle *out);
@@ -1206,6 +1314,20 @@ MXNET_DLL int MXIsNumpyShape(int* curr);
  */
 MXNET_DLL int MXSetIsNumpyShape(int is_np_shape, int* prev);
 /*!
+ * \brief get numpy default data type
+ * \param curr returns the current status
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXIsNumpyDefaultDtype(bool* curr);
+/*!
+ * \brief set numpy default data type
+ * \param dtype_flag false when default dtype is flaot32,
+ *                   true when default dtype is flaot64.
+ * \param prev returns the previous status before this set
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXSetIsNumpyDefaultDtype(bool dtype_flag, bool* prev);
+/*!
  * \brief mark NDArrays as variables to compute gradient for autograd
  * \param num_var number of variable NDArrays
  * \param var_handles variable NDArrays
@@ -1274,10 +1396,23 @@ MXNET_DLL int MXCreateCachedOpEx(SymbolHandle handle,
                                  const char** keys,
                                  const char** vals,
                                  CachedOpHandle *out);
+
+/*!
+ * \brief create cached operator, allows to choose thread_safe version
+ * of cachedop
+ */
+MXNET_DLL int MXCreateCachedOpEX(SymbolHandle handle,
+                                 int num_flags,
+                                 const char** keys,
+                                 const char** vals,
+                                 CachedOpHandle *out,
+                                 bool thread_safe DEFAULT(false));
+
 /*!
  * \brief free cached operator
  */
 MXNET_DLL int MXFreeCachedOp(CachedOpHandle handle);
+
 /*!
  * \brief invoke cached operator
  */
@@ -1286,6 +1421,7 @@ MXNET_DLL int MXInvokeCachedOp(CachedOpHandle handle,
                                NDArrayHandle *inputs,
                                int *num_outputs,
                                NDArrayHandle **outputs);
+
 /*!
  * \brief invoke a cached op
  * \param handle the handle to the cached op
@@ -1309,6 +1445,44 @@ MXNET_DLL int MXInvokeCachedOpEx(CachedOpHandle handle,
 MXNET_DLL int MXCachedOpRegisterOpHook(NDArrayHandle handle,
                                        CachedOpMonitorCallback callback,
                                        bool monitor_all);
+
+/*!
+ * \brief Get current status of deferred compute mode
+ * \param curr returns the current status.
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXNDArrayIsDeferredCompute(int *curr);
+
+/*!
+ * \brief set whether to enable deferred compute mode
+ * \param deferred_compute_enabled 1 to enable, 0 to disable.
+ * \param prev returns the previous status before this set.
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXNDArraySetIsDeferredCompute(int deferred_compute_enabled, int *prev);
+
+/*!
+ * \brief Associate variables with deferred compute arrays
+ * \param arrays ndarray handles to be matched with variables
+ * \param variables symbol handles of variables to be matched with ndarrays
+ * \param num number of arrays and variables respectively
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXNDArraySetDeferredComputeVariable(NDArrayHandle *arrays,
+                                                  SymbolHandle *variables,
+                                                  int num);
+
+/*!
+ * \brief Convert the graph constructed during deferred computation mode to a Symbol.
+ * \param output_handles ndarray handles of outputs
+ * \param out grouped output symbol handle
+ *
+ * Construct a Symbol for the deferred computation graph. output_handles
+ * specifies the outputs of interest which the returned symbol will compute.
+ */
+MXNET_DLL int MXNDArrayGetDeferredComputeSymbol(NDArrayHandle *output_handles,
+                                                int num_outputs,
+                                                SymbolHandle *out);
 
 //--------------------------------------------
 // Part 3: symbolic configuration generation
@@ -1388,6 +1562,10 @@ MXNET_DLL int MXSymbolGetAtomicSymbolInfo(AtomicSymbolCreator creator,
                                           const char **return_type DEFAULT(NULL));
 /*!
  * \brief Create an AtomicSymbol.
+ *
+ * A Symbol is said to be atomic if it is not composed of other Symbols. Atomic
+ * Symbols can be composed.
+ *
  * \param creator the AtomicSymbolCreator
  * \param num_param the number of parameters
  * \param keys the keys to the params
@@ -1638,7 +1816,7 @@ MXNET_DLL int MXSymbolGrad(SymbolHandle sym,
  * \brief DEPRECATED. Use MXSymbolInferShapeEx instead.
  * infer shape of unknown input shapes given the known one.
  *  The shapes are packed into a CSR matrix represented by arg_ind_ptr and arg_shape_data
- *  The call will be treated as a kwargs call if key != nullptr or num_args==0, otherwise it is positional.
+ *  The call will be treated as a kwargs call if key != NULL or num_args==0, otherwise it is positional.
  *
  * \param sym symbol handle
  * \param num_args numbe of input arguments.
@@ -1646,13 +1824,13 @@ MXNET_DLL int MXSymbolGrad(SymbolHandle sym,
  * \param arg_ind_ptr the head pointer of the rows in CSR
  * \param arg_shape_data the content of the CSR
  * \param in_shape_size sizeof the returning array of in_shapes
- * \param in_shape_ndim returning array of shape dimensions of eachs input shape.
+ * \param in_shape_ndim returning array of shape dimensions of each input shape.
  * \param in_shape_data returning array of pointers to head of the input shape.
  * \param out_shape_size sizeof the returning array of out_shapes
- * \param out_shape_ndim returning array of shape dimensions of eachs input shape.
- * \param out_shape_data returning array of pointers to head of the input shape.
+ * \param out_shape_ndim returning array of shape dimensions of each output shape.
+ * \param out_shape_data returning array of pointers to head of the output shape.
  * \param aux_shape_size sizeof the returning array of aux_shapes
- * \param aux_shape_ndim returning array of shape dimensions of eachs auxiliary shape.
+ * \param aux_shape_ndim returning array of shape dimensions of each auxiliary shape.
  * \param aux_shape_data returning array of pointers to head of the auxiliary shape.
  * \param complete whether infer shape completes or more information is needed.
  * \return 0 when success, -1 when failure happens
@@ -1673,29 +1851,14 @@ MXNET_DLL int MXSymbolInferShape(SymbolHandle sym,
                                  const uint32_t ***aux_shape_data,
                                  int *complete);
 
-MXNET_DLL int MXSymbolInferShape64(SymbolHandle sym,
-                                   uint32_t num_args,
-                                   const char** keys,
-                                   const int64_t *arg_ind_ptr,
-                                   const int64_t *arg_shape_data,
-                                   size_t *in_shape_size,
-                                   const int **in_shape_ndim,
-                                   const int64_t ***in_shape_data,
-                                   size_t *out_shape_size,
-                                   const int **out_shape_ndim,
-                                   const int64_t ***out_shape_data,
-                                   size_t *aux_shape_size,
-                                   const int **aux_shape_ndim,
-                                   const int64_t ***aux_shape_data,
-                                   int *complete);
-
 /*!
  * \brief infer shape of unknown input shapes given the known one.
  *  The shapes are packed into a CSR matrix represented by arg_ind_ptr and arg_shape_data
- *  The call will be treated as a kwargs call if key != nullptr or num_args==0, otherwise it is positional.
- *
+ *  The call will be treated as a kwargs call if key != NULL or num_args==0, otherwise it is positional.
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=0 (by default)
  * \param sym symbol handle
- * \param num_args numbe of input arguments.
+ * \param num_args number of input arguments.
  * \param keys the key of keyword args (optional)
  * \param arg_ind_ptr the head pointer of the rows in CSR
  * \param arg_shape_data the content of the CSR
@@ -1703,10 +1866,10 @@ MXNET_DLL int MXSymbolInferShape64(SymbolHandle sym,
  * \param in_shape_ndim returning array of shape dimensions of eachs input shape.
  * \param in_shape_data returning array of pointers to head of the input shape.
  * \param out_shape_size sizeof the returning array of out_shapes
- * \param out_shape_ndim returning array of shape dimensions of eachs input shape.
- * \param out_shape_data returning array of pointers to head of the input shape.
+ * \param out_shape_ndim returning array of shape dimensions of each output shape.
+ * \param out_shape_data returning array of pointers to head of the output shape.
  * \param aux_shape_size sizeof the returning array of aux_shapes
- * \param aux_shape_ndim returning array of shape dimensions of eachs auxiliary shape.
+ * \param aux_shape_ndim returning array of shape dimensions of each auxiliary shape.
  * \param aux_shape_data returning array of pointers to head of the auxiliary shape.
  * \param complete whether infer shape completes or more information is needed.
  * \return 0 when success, -1 when failure happens
@@ -1727,6 +1890,29 @@ MXNET_DLL int MXSymbolInferShapeEx(SymbolHandle sym,
                                    const int ***aux_shape_data,
                                    int *complete);
 
+/*!
+ * \brief infer shape of unknown input shapes given the known one.
+ *  The shapes are packed into a CSR matrix represented by arg_ind_ptr and arg_shape_data
+ *  The call will be treated as a kwargs call if key != NULL or num_args==0, otherwise it is positional.
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=1 (not default) i.e. Large Tensor Support
+ * \param sym symbol handle
+ * \param num_args number of input arguments.
+ * \param keys the key of keyword args (optional)
+ * \param arg_ind_ptr the head pointer of the rows in CSR
+ * \param arg_shape_data the content of the CSR
+ * \param in_shape_size sizeof the returning array of in_shapes
+ * \param in_shape_ndim returning array of shape dimensions of each input shape.
+ * \param in_shape_data returning array of pointers to head of the input shape.
+ * \param out_shape_size sizeof the returning array of out_shapes
+ * \param out_shape_ndim returning array of shape dimensions of each output shape.
+ * \param out_shape_data returning array of pointers to head of the output shape.
+ * \param aux_shape_size sizeof the returning array of aux_shapes
+ * \param aux_shape_ndim returning array of shape dimensions of each auxiliary shape.
+ * \param aux_shape_data returning array of pointers to head of the auxiliary shape.
+ * \param complete whether infer shape completes or more information is needed.
+ * \return 0 when success, -1 when failure happens
+ */
 MXNET_DLL int MXSymbolInferShapeEx64(SymbolHandle sym,
                                      uint32_t num_args,
                                      const char** keys,
@@ -1749,7 +1935,7 @@ MXNET_DLL int MXSymbolInferShapeEx64(SymbolHandle sym,
  *
  *  Return partially inferred results if not all shapes could be inferred.
  *  The shapes are packed into a CSR matrix represented by arg_ind_ptr and arg_shape_data
- *  The call will be treated as a kwargs call if key != nullptr or num_args==0, otherwise it is positional.
+ *  The call will be treated as a kwargs call if key != NULL or num_args==0, otherwise it is positional.
  *
  * \param sym symbol handle
  * \param num_args numbe of input arguments.
@@ -1757,13 +1943,13 @@ MXNET_DLL int MXSymbolInferShapeEx64(SymbolHandle sym,
  * \param arg_ind_ptr the head pointer of the rows in CSR
  * \param arg_shape_data the content of the CSR
  * \param in_shape_size sizeof the returning array of in_shapes
- * \param in_shape_ndim returning array of shape dimensions of eachs input shape.
+ * \param in_shape_ndim returning array of shape dimensions of each input shape.
  * \param in_shape_data returning array of pointers to head of the input shape.
  * \param out_shape_size sizeof the returning array of out_shapes
- * \param out_shape_ndim returning array of shape dimensions of eachs input shape.
- * \param out_shape_data returning array of pointers to head of the input shape.
+ * \param out_shape_ndim returning array of shape dimensions of each output shape.
+ * \param out_shape_data returning array of pointers to head of the output shape.
  * \param aux_shape_size sizeof the returning array of aux_shapes
- * \param aux_shape_ndim returning array of shape dimensions of eachs auxiliary shape.
+ * \param aux_shape_ndim returning array of shape dimensions of each auxiliary shape.
  * \param aux_shape_data returning array of pointers to head of the auxiliary shape.
  * \param complete whether infer shape completes or more information is needed.
  * \return 0 when success, -1 when failure happens
@@ -1784,42 +1970,28 @@ MXNET_DLL int MXSymbolInferShapePartial(SymbolHandle sym,
                                         const uint32_t ***aux_shape_data,
                                         int *complete);
 
-MXNET_DLL int MXSymbolInferShapePartial64(SymbolHandle sym,
-                                          uint32_t num_args,
-                                          const char** keys,
-                                          const int64_t *arg_ind_ptr,
-                                          const int64_t *arg_shape_data,
-                                          size_t *in_shape_size,
-                                          const int **in_shape_ndim,
-                                          const int64_t ***in_shape_data,
-                                          size_t *out_shape_size,
-                                          const int **out_shape_ndim,
-                                          const int64_t ***out_shape_data,
-                                          size_t *aux_shape_size,
-                                          const int **aux_shape_ndim,
-                                          const int64_t ***aux_shape_data,
-                                          int *complete);
-
 /*!
  * \brief partially infer shape of unknown input shapes given the known one.
  *
  *  Return partially inferred results if not all shapes could be inferred.
  *  The shapes are packed into a CSR matrix represented by arg_ind_ptr and arg_shape_data
- *  The call will be treated as a kwargs call if key != nullptr or num_args==0, otherwise it is positional.
+ *  The call will be treated as a kwargs call if key != NULL or num_args==0, otherwise it is positional.
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=0 (by default)
  *
  * \param sym symbol handle
- * \param num_args numbe of input arguments.
+ * \param num_args number of input arguments.
  * \param keys the key of keyword args (optional)
  * \param arg_ind_ptr the head pointer of the rows in CSR
  * \param arg_shape_data the content of the CSR
  * \param in_shape_size sizeof the returning array of in_shapes
- * \param in_shape_ndim returning array of shape dimensions of eachs input shape.
+ * \param in_shape_ndim returning array of shape dimensions of each input shape.
  * \param in_shape_data returning array of pointers to head of the input shape.
  * \param out_shape_size sizeof the returning array of out_shapes
- * \param out_shape_ndim returning array of shape dimensions of eachs input shape.
- * \param out_shape_data returning array of pointers to head of the input shape.
+ * \param out_shape_ndim returning array of shape dimensions of each output shape.
+ * \param out_shape_data returning array of pointers to head of the output shape.
  * \param aux_shape_size sizeof the returning array of aux_shapes
- * \param aux_shape_ndim returning array of shape dimensions of eachs auxiliary shape.
+ * \param aux_shape_ndim returning array of shape dimensions of each auxiliary shape.
  * \param aux_shape_data returning array of pointers to head of the auxiliary shape.
  * \param complete whether infer shape completes or more information is needed.
  * \return 0 when success, -1 when failure happens
@@ -1840,6 +2012,32 @@ MXNET_DLL int MXSymbolInferShapePartialEx(SymbolHandle sym,
                                           const int ***aux_shape_data,
                                           int *complete);
 
+/*!
+ * \brief partially infer shape of unknown input shapes given the known one.
+ *
+ *  Return partially inferred results if not all shapes could be inferred.
+ *  The shapes are packed into a CSR matrix represented by arg_ind_ptr and arg_shape_data
+ *  The call will be treated as a kwargs call if key != NULL or num_args==0, otherwise it is positional.
+ *  This api is available when MXNet is built with flag
+ *  USE_INT64_TENSOR_SIZE=1 (not default) i.e. Large Tensor Support
+ *
+ * \param sym symbol handle
+ * \param num_args number of input arguments.
+ * \param keys the key of keyword args (optional)
+ * \param arg_ind_ptr the head pointer of the rows in CSR
+ * \param arg_shape_data the content of the CSR
+ * \param in_shape_size sizeof the returning array of in_shapes
+ * \param in_shape_ndim returning array of shape dimensions of each input shape.
+ * \param in_shape_data returning array of pointers to head of the input shape.
+ * \param out_shape_size sizeof the returning array of out_shapes
+ * \param out_shape_ndim returning array of shape dimensions of each output shape.
+ * \param out_shape_data returning array of pointers to head of the output shape.
+ * \param aux_shape_size sizeof the returning array of aux_shapes
+ * \param aux_shape_ndim returning array of shape dimensions of each auxiliary shape.
+ * \param aux_shape_data returning array of pointers to head of the auxiliary shape.
+ * \param complete whether infer shape completes or more information is needed.
+ * \return 0 when success, -1 when failure happens
+ */
 MXNET_DLL int MXSymbolInferShapePartialEx64(SymbolHandle sym,
                                             uint32_t num_args,
                                             const char** keys,
@@ -1859,7 +2057,7 @@ MXNET_DLL int MXSymbolInferShapePartialEx64(SymbolHandle sym,
 /*!
  * \brief infer type of unknown input types given the known one.
  *  The types are packed into a CSR matrix represented by arg_ind_ptr and arg_type_data
- *  The call will be treated as a kwargs call if key != nullptr or num_args==0, otherwise it is positional.
+ *  The call will be treated as a kwargs call if key != NULL or num_args==0, otherwise it is positional.
  *
  * \param sym symbol handle
  * \param num_args numbe of input arguments.
@@ -1868,7 +2066,7 @@ MXNET_DLL int MXSymbolInferShapePartialEx64(SymbolHandle sym,
  * \param in_type_size sizeof the returning array of in_types
  * \param in_type_data returning array of pointers to head of the input type.
  * \param out_type_size sizeof the returning array of out_types
- * \param out_type_data returning array of pointers to head of the input type.
+ * \param out_type_data returning array of pointers to head of the output type.
  * \param aux_type_size sizeof the returning array of aux_types
  * \param aux_type_data returning array of pointers to head of the auxiliary type.
  * \param complete whether infer type completes or more information is needed.
@@ -1891,7 +2089,7 @@ MXNET_DLL int MXSymbolInferType(SymbolHandle sym,
  *
  *  Return partially inferred results if not all types could be inferred.
  *  The types are packed into a CSR matrix represented by arg_ind_ptr and arg_type_data
- *  The call will be treated as a kwargs call if key != nullptr or num_args==0, otherwise it is positional.
+ *  The call will be treated as a kwargs call if key != NULL or num_args==0, otherwise it is positional.
  *
  * \param sym symbol handle
  * \param num_args numbe of input arguments.
@@ -1900,7 +2098,7 @@ MXNET_DLL int MXSymbolInferType(SymbolHandle sym,
  * \param in_type_size sizeof the returning array of in_types
  * \param in_type_data returning array of pointers to head of the input type.
  * \param out_type_size sizeof the returning array of out_types
- * \param out_type_data returning array of pointers to head of the input type.
+ * \param out_type_data returning array of pointers to head of the output type.
  * \param aux_type_size sizeof the returning array of aux_types
  * \param aux_type_data returning array of pointers to head of the auxiliary type.
  * \param complete whether infer type completes or more information is needed.
@@ -1932,6 +2130,7 @@ MXNET_DLL int MXSymbolInferTypePartial(SymbolHandle sym,
  * \param quantized_dtype the quantized destination type for input data
  * \param calib_quantize **Deprecated**. quantize op will always be calibrated if could
  * \param quantize_mode quantize mode to be used in quantize pass
+ * \param quantize_granularity quantize granularity, tensor-wise or channel-wise
  * \param out_num_calib_names return the number of nodes to be calibrated
  * \param out_calib_names return the node names to be calibrated
  */
@@ -1944,8 +2143,8 @@ MXNET_DLL int MXQuantizeSymbol(SymbolHandle sym_handle,
                                const char **excluded_op_names,
                                const uint32_t num_offline, const char **offline_params,
                                const char *quantized_dtype, const bool calib_quantize,
-                               const char *quantize_mode, uint32_t* out_num_calib_names,
-                               const char ***out_calib_names);
+                               const char *quantize_mode, const char *quantize_granularity,
+                               uint32_t* out_num_calib_names, const char ***out_calib_names);
 
 /*!
  * \brief Convert a symbol into a mixed precision symbol with cast operators for target dtype casting
@@ -2043,11 +2242,19 @@ MXNET_DLL int MXOptimizeForBackend(SymbolHandle sym_handle,
                                    const char* backend_name,
                                    const int dev_type,
                                    SymbolHandle* ret_sym_handle,
-                                   const mx_uint len,
+                                   const mx_uint args_len,
                                    NDArrayHandle* in_args_handle,
+                                   const mx_uint aux_len,
+                                   NDArrayHandle* in_aux_handle,
                                    const mx_uint num_options,
                                    const char** keys,
-                                   const char** vals);
+                                   const char** vals,
+                                   int* new_args_cnt,
+                                   NDArrayHandle** new_args_handle,
+                                   char*** new_arg_names_handle,
+                                   int* new_aux_cnt,
+                                   NDArrayHandle** new_aux_handle,
+                                   char*** new_aux_names_handle);
 
 
 //--------------------------------------------
@@ -2486,6 +2693,13 @@ MXNET_DLL int MXDataIterNext(DataIterHandle handle,
 MXNET_DLL int MXDataIterBeforeFirst(DataIterHandle handle);
 
 /*!
+ * \brief Call iterator.GetLenHint. Note that some iterators don't provide length.
+ * \param handle the handle to iterator
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXDataIterGetLenHint(DataIterHandle handle,
+                                   int64_t *len);
+/*!
  * \brief Get the handle to the NDArray of underlying data
  * \param handle the handle pointer to the data iterator
  * \param out handle to underlying data NDArray
@@ -2520,6 +2734,147 @@ MXNET_DLL int MXDataIterGetPadNum(DataIterHandle handle,
  */
 MXNET_DLL int MXDataIterGetLabel(DataIterHandle handle,
                                  NDArrayHandle *out);
+/*!
+ * \brief Get the handles to specified underlying ndarrays of index
+ * \param handle the handle pointer to the data iterator
+ * \param num_outputs the length of outputs
+ * \param out the handle to an array of NDArrays that stores pointers to handles
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXDataIterGetItems(DataIterHandle handle,
+                                int* num_outputs,
+                                NDArrayHandle **outputs);
+
+/*!
+ * \brief List all the available dataset entries
+ * \param out_size the size of returned datasets
+ * \param out_array the output dataset entries
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXListDatasets(uint32_t *out_size,
+                             DatasetCreator **out_array);
+/*!
+ * \brief Init an dataset, init with parameters
+ * the array size of passed in arguments
+ * \param handle of the dataset creator
+ * \param num_param number of parameter
+ * \param keys parameter keys
+ * \param vals parameter values
+ * \param out resulting dataset
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXDatasetCreateDataset(DatasetCreator handle,
+                                     uint32_t num_param,
+                                     const char **keys,
+                                     const char **vals,
+                                     DatasetHandle *out);
+/*!
+ * \brief Get the detailed information about dataset.
+ * \param creator the DatasetCreator.
+ * \param name The returned name of the creator.
+ * \param description The returned description of the symbol.
+ * \param num_args Number of arguments.
+ * \param arg_names Name of the arguments.
+ * \param arg_type_infos Type informations about the arguments.
+ * \param arg_descriptions Description information about the arguments.
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXDatasetGetDatasetInfo(DatasetCreator creator,
+                                      const char **name,
+                                      const char **description,
+                                      uint32_t *num_args,
+                                      const char ***arg_names,
+                                      const char ***arg_type_infos,
+                                      const char ***arg_descriptions);
+/*!
+ * \brief Free the handle to the IO module
+ * \param handle the handle pointer to the dataset
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXDatasetFree(DatasetHandle handle);
+/*!
+ * \brief Get dataset overal length(size)
+ * \param handle the handle to dataset
+ * \param out return value of GetLen
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXDatasetGetLen(DatasetHandle handle,
+                              uint64_t *out);
+/*!
+ * \brief Get Output NDArray given specified indices
+ * \param handle the handle to dataset
+ * \param index the index of the dataset item to be retrieved
+ * \param num_outputs the number of output ndarrays
+ * \param outputs the pointers to handles of ndarrays
+ * \param is_scalar if not zeros then output should be casted to scalars
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXDatasetGetItems(DatasetHandle handle,
+                                uint64_t index,
+                                int* num_outputs,
+                                NDArrayHandle **outputs);
+
+/*!
+ * \brief List all the available batchify function entries
+ * \param out_size the size of returned batchify functions
+ * \param out_array the output batchify function entries
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXListBatchifyFunctions(uint32_t *out_size,
+                                      BatchifyFunctionCreator **out_array);
+/*!
+ * \brief Init an batchify function, init with parameters
+ * the array size of passed in arguments
+ * \param handle of the batchify function creator
+ * \param num_param number of parameter
+ * \param keys parameter keys
+ * \param vals parameter values
+ * \param out resulting batchify function
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXBatchifyFunctionCreateFunction(BatchifyFunctionCreator handle,
+                                     uint32_t num_param,
+                                     const char **keys,
+                                     const char **vals,
+                                     BatchifyFunctionHandle *out);
+/*!
+ * \brief Get the detailed information about batchify function.
+ * \param creator the batchifyFunctionCreator.
+ * \param name The returned name of the creator.
+ * \param description The returned description of the symbol.
+ * \param num_args Number of arguments.
+ * \param arg_names Name of the arguments.
+ * \param arg_type_infos Type informations about the arguments.
+ * \param arg_descriptions Description information about the arguments.
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXBatchifyFunctionGetFunctionInfo(BatchifyFunctionCreator creator,
+                                      const char **name,
+                                      const char **description,
+                                      uint32_t *num_args,
+                                      const char ***arg_names,
+                                      const char ***arg_type_infos,
+                                      const char ***arg_descriptions);
+/*!
+ * \brief Invoke the Batchify Function
+ * \param handle the handle pointer to the batchify function
+ * \param batch_size the batch size
+ * \param num_output the number of ndarrays for output
+ * \param inputs the pointers to input ndarrays
+ * \param ouptuts the pointers to output ndarrays
+ * \return 0 when success, -1 when failure happens
+ */                                      
+MXNET_DLL int MXBatchifyFunctionInvoke(BatchifyFunctionHandle handle,
+                                       int batch_size,
+                                       int num_output,
+                                       NDArrayHandle *inputs,
+                                       NDArrayHandle **outputs);
+/*!
+ * \brief Free the handle to the IO module
+ * \param handle the handle pointer to the batchify function
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXBatchifyFunctionFree(BatchifyFunctionHandle handle);
 //--------------------------------------------
 // Part 6: basic KVStore interface
 //--------------------------------------------
@@ -2712,6 +3067,48 @@ MXNET_DLL int MXKVStorePullRowSparseEx(KVStoreHandle handle,
                                        NDArrayHandle* vals,
                                        const NDArrayHandle* row_ids,
                                        int priority);
+
+/*!
+ * \brief broadcast a list of (key, value) pairs from the kvstore
+ * \param handle handle to the kvstore
+ * \param vnum the number of key-value pairs corresponding to vkeys
+ * \param vkeys the list of keys for the values to be pushed
+ * \param onum the number of key-value pairs corresponding to okeys
+ * \param okeys the list of keys for the values to be pulled
+ * \param vals the list of values
+ * \param outs the list of outputs
+ * \param priority the priority of the action
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXKVStoreBroadcast(KVStoreHandle handle,
+                                 mx_uint vnum,
+                                 const int* vkeys,
+                                 mx_uint onum,
+                                 const int* okeys,
+                                 NDArrayHandle* vals,
+                                 NDArrayHandle* outs,
+                                 int priority);
+/*!
+ * \brief broadcast a list of (key, value) pairs from the kvstore,
+ * where each key is a string
+ * \param handle handle to the kvstore
+ * \param vnum the number of key-value pairs corresponding to vkeys
+ * \param vkeys the list of keys for the values to be pushed
+ * \param onum the number of key-value pairs corresponding to okeys
+ * \param okeys the list of keys for the values to be pulled
+ * \param vals the list of values
+ * \param outs the list of outputs
+ * \param priority the priority of the action
+ * \return 0 when success, -1 when failure happens
+ */
+MXNET_DLL int MXKVStoreBroadcastEx(KVStoreHandle handle,
+                                   mx_uint vnum,
+                                   const char** vkeys,
+                                   mx_uint onum,
+                                   const char** okeys,
+                                   NDArrayHandle* vals,
+                                   NDArrayHandle* outs,
+                                   int priority);
 
 /*!
  * \brief push and pull a list of (key, value) pairs from the kvstore

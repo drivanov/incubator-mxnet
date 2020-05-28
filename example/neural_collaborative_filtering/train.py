@@ -45,7 +45,7 @@ parser.add_argument('--model-type', type=str, default='neumf', choices=['neumf',
                     help="mdoel type")
 parser.add_argument('--num-negative', type=int, default=4,
                     help="number of negative samples per positive sample while training.")
-parser.add_argument('--layers', default='[256, 128, 64]',
+parser.add_argument('--layers', default='[256, 256, 128, 64]',
                     help="list of number hiddens of fc layers in mlp model.")
 parser.add_argument('--factor-size-gmf', type=int, default=64,
                     help="outdim of gmf embedding layers.")
@@ -124,7 +124,7 @@ if __name__ == '__main__':
     mod.init_params()
     mod.init_optimizer(optimizer='adam', optimizer_params=[('learning_rate', learning_rate), ('beta1',beta1), ('beta2',beta2), ('epsilon',eps)])
     
-    metric = mx.metric.create(cross_entropy)
+    metric = mx.gluon.metric.create(cross_entropy)
     speedometer = mx.callback.Speedometer(batch_size, log_interval)
     best_hr, best_ndcg, best_iter = -1, -1, -1 
     logging.info('Training started ...')

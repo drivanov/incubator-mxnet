@@ -270,6 +270,13 @@ std::string FusedOp::GenerateCode(const std::vector<OpReqType> &req,
             return out;
           };
           auto build_tuple = [ndim](int axis, const std::string str, const std::string def) {
+            if (axis < 0 &&
+                axis >= -ndim) {
+              axis += ndim;
+            }
+            if (axis < 0 || axis >= ndim) {
+              LOG(FATAL) << "Axis " << axis << " is out of bounds for array of dimension " << ndim;
+            }
             std::string tuple = "{";
             for (int i = 0; i < axis; i++) {
                 tuple = tuple + def + ",";
@@ -453,6 +460,42 @@ std::string FusedOp::GenerateCode(const std::vector<OpReqType> &req,
           continue;
         }
 
+        // LeakyReLU, look for act_type
+        if (op_name == "LeakyReLU") {
+            std::string act_type = node.source->attrs.dict.at("act_type");
+            const std::vector<std::vector<std::string>>& op_descs =
+                fusion::LeakyReLU_ops.at(act_type);
+            if (fusion::LeakyReLU_ops.find(act_type) != fusion::LeakyReLU_ops.end()) {
+              CHECK_EQ(outputs[i], op_descs.size());
+              size_t count = 0;
+              for (const auto& op_desc : op_descs) {
+                var_name = "temp" + std::to_string(temp_name_counter++);
+                const std::string& fmt = ParseOpDescription(op_desc, variables, node);
+                code += "const auto " + var_name + " = " + fmt + ";\n";
+                variables[{i, count}] = var_name;
+                ++count;
+              }
+              continue;
+            }
+        }
+        if (op_name == "_backward_LeakyReLU") {
+            std::string act_type = node.source->attrs.dict.at("act_type");
+            const std::vector<std::vector<std::string>>& op_descs =
+                fusion::LeakyReLU_bwd_ops.at(act_type);
+            if (fusion::LeakyReLU_ops.find(act_type) != fusion::LeakyReLU_bwd_ops.end()) {
+              CHECK_EQ(outputs[i], op_descs.size());
+              size_t count = 0;
+              for (const auto& op_desc : op_descs) {
+                var_name = "temp" + std::to_string(temp_name_counter++);
+                const std::string& fmt = ParseOpDescription(op_desc, variables, node);
+                code += "const auto " + var_name + " = " + fmt + ";\n";
+                variables[{i, count}] = var_name;
+                ++count;
+              }
+              continue;
+            }
+        }
+
         LOG(FATAL) << "Unrecognized op " + op_name;
       }
     } else {
@@ -483,7 +526,7 @@ std::string FusedOp::GenerateCode(const std::vector<OpReqType> &req,
       code += "op::store_add_index(vec_" + var_name + ", i, " + var_name + ", " +
               var_name + "_shape);\n";
     } else if (req[counter] == kNullOp) {
-      // NULL req, do not do anything
+      // nullptr req, do not do anything
     } else {
       LOG(FATAL) << "Encountered unexpected req.";
     }
@@ -589,12 +632,12 @@ CUfunction FusedOp::CompileCode(const std::string &code,
                                   &code_with_header[0],                      // buffer
                                   (kernel_name + "_kernel.cu").c_str(),      // name
                                   0,                                         // num headers
-                                  NULL,                                      // headers
-                                  NULL));                                    // include names
+                                  nullptr,                                      // headers
+                                  nullptr));                                    // include names
 
     std::string gpu_arch_arg = "--gpu-architecture=compute_" + std::to_string(sm_arch);
     const char *opts[] = {gpu_arch_arg.c_str(),
-                          "--std=c++11"};
+                          "--std=c++14"};
     const std::string kernel_name_demangled = "FusedKernel_" + kernel_name;
     NVRTC_CALL(nvrtcAddNameExpression(program, (kernel_name_demangled).c_str()));
 
@@ -723,7 +766,7 @@ void FusedOp::Forward<gpu>(const nnvm::NodeAttrs& attrs,
     kernel_functions_[fusion::kGeneral] = CompileCode(code, attrs.name, dev_id);
     if (check_shape_args_.size() > 0) {
       const auto& code = GenerateCode(req, in_dtypes, out_dtypes, in_ndims, out_ndims,
-                           node_shapes, node_dtypes, nvec, attrs.name, NULL);
+                           node_shapes, node_dtypes, nvec, attrs.name, nullptr);
       kernel_functions_[fusion::kShapeOptimized] = CompileCode(code, attrs.name, dev_id);
     }
     initialized_ = true;

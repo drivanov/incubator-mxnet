@@ -16,23 +16,28 @@
 # under the License.
 
 # coding: utf-8
-# pylint: disable= arguments-differ, too-many-lines
+# pylint: disable= arguments-differ, too-many-lines, reimported
 """Base container class for all neural network models."""
 __all__ = ['Block', 'HybridBlock', 'SymbolBlock']
 
 import threading
 import copy
 import warnings
-import re
+import weakref
 from collections import OrderedDict, defaultdict
 
-from ..base import mx_real_t, MXNetError
-from .. import symbol, ndarray, initializer, np_symbol
+import re
+import numpy as np
+
+from ..base import mx_real_t, MXNetError, NDArrayHandle, py_str
+from .. import symbol, ndarray, initializer, autograd, _deferred_compute as dc
+from ..symbol.numpy import _symbol as np_symbol
 from ..symbol import Symbol
 from ..ndarray import NDArray
 from .. import name as _name
+from .. import profiler as _profiler
 from .parameter import Parameter, ParameterDict, DeferredInitializationError
-from .utils import _indent, _brief_print_list, HookHandle
+from .utils import _indent, _brief_print_list, HookHandle, shape_is_known
 from .utils import _check_same_symbol_type, _check_all_np_ndarrays
 from .. import numpy_extension as _mx_npx
 from .. import numpy as _mx_np
@@ -45,52 +50,70 @@ class _BlockScope(object):
     _current = threading.local()
 
     def __init__(self, block):
-        self._block = block
+        self._block = weakref.ref(block) if block is not None else None
         self._counter = {}
-        self._old_scope = None
-        self._name_scope = None
+        self._local = threading.local()
+        self._local._old_scope = None
+        self._local._name_scope = None
 
     @staticmethod
     def create(prefix, params, hint):
-        """Creates prefix and params for new `Block`."""
+        """
+        Creates prefix, params, and profiler scope name for new `Block`.
+        The profiler scope is to support the GPU memory profiler.
+        """
         current = getattr(_BlockScope._current, "value", None)
-        if current is None:
+        block = current._block() if current is not None else None
+        if current is None or block is None:
             if prefix is None:
                 if not hasattr(_name.NameManager._current, "value"):
                     _name.NameManager._current.value = _name.NameManager()
                 prefix = _name.NameManager._current.value.get(None, hint) + '_'
+            # replace the trailing underscore with colon
+            profiler_scope_name = (prefix[:-1] if prefix.endswith('_') \
+                                   else prefix) + ":"
             if params is None:
                 params = ParameterDict(prefix)
             else:
                 params = ParameterDict(params.prefix, params)
-            return prefix, params
+            return prefix, params, profiler_scope_name
 
         if prefix is None:
             count = current._counter.get(hint, 0)
             prefix = '%s%d_'%(hint, count)
             current._counter[hint] = count + 1
         if params is None:
-            parent = current._block.params
+            parent = block.params
             params = ParameterDict(parent.prefix+prefix, parent._shared)
         else:
             params = ParameterDict(params.prefix, params)
-        return current._block.prefix+prefix, params
+        # replace the trailing underscore with colon
+        profiler_scope_name = (prefix[:-1] if prefix.endswith('_') \
+                               else prefix) + ":"
+        return block.prefix + prefix, params, \
+               block._profiler_scope_name + profiler_scope_name
 
     def __enter__(self):
-        if self._block._empty_prefix:
+        block = self._block()
+        if block is None or block._empty_prefix:
             return self
-        self._old_scope = getattr(_BlockScope._current, "value", None)
+        self._local._old_scope = getattr(_BlockScope._current, "value", None)
         _BlockScope._current.value = self
-        self._name_scope = _name.Prefix(self._block.prefix)
-        self._name_scope.__enter__()
+        self._local._name_scope = _name.Prefix(block.prefix)
+        self._local._name_scope.__enter__()
+        self._local._profiler_scope = _profiler.Scope(block._profiler_scope_name)
+        self._local._profiler_scope.__enter__()
         return self
 
     def __exit__(self, ptype, value, trace):
-        if self._block._empty_prefix:
+        block = self._block()
+        if block is None or block._empty_prefix:
             return
-        self._name_scope.__exit__(ptype, value, trace)
-        self._name_scope = None
-        _BlockScope._current.value = self._old_scope
+        self._local._name_scope.__exit__(ptype, value, trace)
+        self._local._name_scope = None
+        self._local._profiler_scope.__exit__(ptype, value, trace)
+        self._local._profiler_scope = None
+        _BlockScope._current.value = self._local._old_scope
 
 
 def _gather_type_ctx_info(args):
@@ -232,8 +255,8 @@ class Block(object):
     :py:class:`Block` can be nested recursively in a tree structure. You can create and
     assign child :py:class:`Block` as regular attributes::
 
+        import mxnet as mx
         from mxnet.gluon import Block, nn
-        from mxnet import ndarray as F
 
         class Model(Block):
             def __init__(self, **kwargs):
@@ -244,12 +267,12 @@ class Block(object):
                     self.dense1 = nn.Dense(20)
 
             def forward(self, x):
-                x = F.relu(self.dense0(x))
-                return F.relu(self.dense1(x))
+                x = mx.nd.relu(self.dense0(x))
+                return mx.nd.relu(self.dense1(x))
 
         model = Model()
         model.initialize(ctx=mx.cpu(0))
-        model(F.zeros((10, 10), ctx=mx.cpu(0)))
+        model(mx.nd.zeros((10, 10), ctx=mx.cpu(0)))
 
 
     Child :py:class:`Block` assigned this way will be registered and :py:meth:`collect_params`
@@ -273,7 +296,8 @@ class Block(object):
     """
     def __init__(self, prefix=None, params=None):
         self._empty_prefix = prefix == ''
-        self._prefix, self._params = _BlockScope.create(prefix, params, self._alias())
+        self._prefix, self._params, self._profiler_scope_name = \
+                _BlockScope.create(prefix, params, self._alias())
         self._name = self._prefix[:-1] if self._prefix.endswith('_') else self._prefix
         self._scope = _BlockScope(self)
         self._children = OrderedDict()
@@ -324,7 +348,7 @@ class Block(object):
                         return True
                 return False
             elif isinstance(data, Block):
-                return not data in children
+                return not data in (c() for c in children)
             else:
                 return False
         for k, v in self.__dict__.items():
@@ -402,7 +426,7 @@ class Block(object):
             pattern = re.compile(select)
             ret.update({name:value for name, value in self.params.items() if pattern.match(name)})
         for cld in self._children.values():
-            ret.update(cld.collect_params(select=select))
+            ret.update(cld().collect_params(select=select))
         return ret
 
     def _collect_params_with_prefix(self, prefix=''):
@@ -410,7 +434,7 @@ class Block(object):
             prefix += '.'
         ret = {prefix + key : val for key, val in self._reg_params.items()}
         for name, child in self._children.items():
-            ret.update(child._collect_params_with_prefix(prefix + name))
+            ret.update(child()._collect_params_with_prefix(prefix + name))
         return ret
 
     def save_parameters(self, filename, deduplicate=False):
@@ -578,7 +602,7 @@ class Block(object):
         attributes will be registered automatically."""
         if name is None:
             name = str(len(self._children))
-        self._children[name] = block
+        self._children[name] = weakref.ref(block)
 
     def register_forward_pre_hook(self, hook):
         r"""Registers a forward pre-hook on the block.
@@ -631,7 +655,7 @@ class Block(object):
         this block
         """
         for cld in self._children.values():
-            cld.apply(fn)
+            cld().apply(fn)
         fn(self)
         return self
 
@@ -655,22 +679,10 @@ class Block(object):
         self.collect_params().initialize(init, ctx, verbose, force_reinit)
 
     def hybridize(self, active=True, **kwargs):
-        """Activates or deactivates :py:class:`HybridBlock` s recursively. Has no effect on
-        non-hybrid children.
-
-        Parameters
-        ----------
-        active : bool, default True
-            Whether to turn hybrid on or off.
-        static_alloc : bool, default False
-            Statically allocate memory to improve speed. Memory usage may increase.
-        static_shape : bool, default False
-            Optimize for invariant input shapes between iterations. Must also
-            set static_alloc to True. Change of input shapes is still allowed
-            but slower.
+        """ Please refer description of HybridBlock hybridize().
         """
         for cld in self._children.values():
-            cld.hybridize(active, **kwargs)
+            cld().hybridize(active, **kwargs)
 
     def cast(self, dtype):
         """Cast this Block to use another data type.
@@ -681,7 +693,7 @@ class Block(object):
             The new data type.
         """
         for child in self._children.values():
-            child.cast(dtype)
+            child().cast(dtype)
         for _, param in self.params.items():
             param.cast(dtype)
 
@@ -716,12 +728,16 @@ class Block(object):
         Parameters
         ----------
         callback : function
-            Takes a string and a NDArrayHandle.
+            Function called to inspect the values of the intermediate outputs
+            of blocks after hybridization. It takes 3 parameters:
+            name of the tensor being inspected (str)
+            name of the operator producing or consuming that tensor (str)
+            tensor being inspected (NDArray).
         monitor_all : bool, default False
-            If true, monitor both input and output, otherwise monitor output only.
+            If True, monitor both input and output, otherwise monitor output only.
         """
         for cld in self._children.values():
-            cld.register_op_hook(callback, monitor_all)
+            cld().register_op_hook(callback, monitor_all)
 
     def summary(self, *inputs):
         """Print the summary of the model's output and parameters.
@@ -851,9 +867,9 @@ class HybridBlock(Block):
                     self.dense0 = nn.Dense(20)
                     self.dense1 = nn.Dense(20)
 
-            def hybrid_forward(self, F, x):
-                x = F.relu(self.dense0(x))
-                return F.relu(self.dense1(x))
+            def forward(self, x):
+                x = nd.relu(self.dense0(x))
+                return nd.relu(self.dense1(x))
 
         model = Model()
         model.initialize(ctx=mx.cpu(0))
@@ -885,10 +901,13 @@ class HybridBlock(Block):
         self._cached_op = None
         self._out_format = None
         self._in_format = None
+        self._called_infer_shape_already = False
         self._active = False
         self._flags = []
         self._callback = None
         self._monitor_all = False
+        self._backend = None
+        self._backend_opts = {}
 
     def __setattr__(self, name, value):
         """Registers parameters."""
@@ -896,7 +915,7 @@ class HybridBlock(Block):
         if isinstance(value, HybridBlock):
             self._clear_cached_op()
 
-    def _get_graph(self, *args):
+    def _get_graph_v1(self, *args):
         if not self._cached_graph:
             flatten_args, self._in_format = _flatten(args, "input")
             flatten_inputs = []
@@ -929,12 +948,45 @@ class HybridBlock(Block):
 
         return self._cached_graph
 
+    def _get_graph_v2(self, *args):
+        if not self._cached_graph:
+            flatten_args, self._in_format = _flatten(args, "input")
+            flatten_args = [ele.detach() if ele is not None else None for ele in flatten_args]
+            real_args = [ele for ele in flatten_args if ele is not None]
+            if len(real_args) == 0:
+                raise ValueError('All args are None and we do not support such a case.'
+                                 ' Received args={}'.format(args))
+            if len(real_args) == 1:
+                arg_names = ['data']
+            else:
+                arg_names = ['data{}'.format(i) for i, ele in enumerate(real_args)]
+            symbol_inputs = [
+                symbol.var(name).as_np_ndarray()
+                if isinstance(arg, _mx_np.ndarray) else symbol.var(name)
+                for arg, name in zip(real_args, arg_names)
+            ]
+            dc.set_variable(real_args, symbol_inputs)
+            args = _regroup(flatten_args, self._in_format)
+            with autograd.pause(), dc.context():
+                out = super().__call__(*args)
+            flatten_out, self._out_format = _flatten(out, "output")
+            symbol_outputs = dc.get_symbol(flatten_out)
+            self._cached_graph = symbol_inputs, symbol_outputs
+        return self._cached_graph
+
+    def _get_graph(self, *args):
+        if not self._cached_graph:
+            if self.hybrid_forward.__func__ is not HybridBlock.hybrid_forward:  # Gluon 1
+                return self._get_graph_v1(*args)
+            else:  # Gluon 2 based on deferred compute mode
+                return self._get_graph_v2(*args)
+        return self._cached_graph
+
     def _build_cache(self, *args):
         data, out = self._get_graph(*args)
         data_names = {data.name: i for i, data in enumerate(data)}
         params = self.collect_params()
         input_names = out.list_inputs()
-
         param_names = set(params.keys())
         expected_names = set(input_names)
         for name in expected_names:
@@ -966,7 +1018,31 @@ class HybridBlock(Block):
                 self._cached_op_args.append((False, params[name]))
         flags = [('data_indices', data_indices), ('param_indices', param_indices)] + \
                 self._flags
+
+        args, _ = _flatten(args, "input")
+        try:
+            for is_arg, i in self._cached_op_args:
+                if not is_arg:
+                    i.data()
+        except DeferredInitializationError:
+            self._deferred_infer_shape(*args)
+            for is_arg, i in self._cached_op_args:
+                if not is_arg:
+                    i._finish_deferred_init()
+
+        if self._backend:
+            ctx = args[0].context
+            # get list of params in the order of out.list_arguments
+            arg_array = [args[data_names[name]] if name in data_names.keys() else params[name].data()
+                         for name in out.list_arguments()]
+            aux_array = [args[data_names[name]] if name in data_names.keys() else params[name].data()
+                         for name in out.list_auxiliary_states()]
+            # Partition the graph.
+            out = out.optimize_for(self._backend, arg_array, aux_array, ctx, **self._backend_opts)
+            #update cached graph with partitioned graph
+            self._cached_graph = data, out
         self._cached_op = ndarray.CachedOp(out, flags)
+
 
     def _deferred_infer_shape(self, *args):
         try:
@@ -1007,23 +1083,77 @@ class HybridBlock(Block):
                 raise ValueError("The argument structure of HybridBlock does not match"
                                  " the cached version. Stored format = {}, input format = {}"
                                  .format(fmt, self._in_format))
+
         args_without_none = [ele for ele in args if ele is not None]
-        try:
-            cargs = [args_without_none[i] if is_arg else i.data()
-                     for is_arg, i in self._cached_op_args]
-        except DeferredInitializationError:
-            self._deferred_infer_shape(*args)
-            cargs = []
-            for is_arg, i in self._cached_op_args:
-                if is_arg:
-                    cargs.append(args_without_none[i])
-                else:
-                    i._finish_deferred_init()
-                    cargs.append(i.data())
+        cargs = [args_without_none[i] if is_arg else i.data()
+                 for is_arg, i in self._cached_op_args]
         out = self._cached_op(*cargs)
         if isinstance(out, NDArray):
             out = [out]
         return _regroup(out, self._out_format)
+
+    def optimize_for(self, x, *args, backend=None, backend_opts=None, **kwargs):
+        """Partitions the current HybridBlock and optimizes it for a given backend
+        without executing a forward pass. Modifies the HybridBlock in-place.
+
+        Immediately partitions a HybridBlock using the specified backend. Combines
+        the work done in the hybridize API with part of the work done in the forward
+        pass without calling the CachedOp. Can be used in place of hybridize,
+        afterwards `export` can be called or inference can be run. See README.md in
+        example/extensions/lib_subgraph/README.md for more details.
+
+        Examples
+        --------
+        # partition and then export to file
+        block.optimize_for(x, backend='myPart')
+        block.export('partitioned')
+
+        # partition and then run inference
+        block.optimize_for(x, backend='myPart')
+        block(x)
+
+        Parameters
+        ----------
+        x : NDArray
+            first input to model
+        *args : NDArray
+            other inputs to model
+        backend : str
+            The name of backend, as registered in `SubgraphBackendRegistry`, default None
+        backend_opts : dict of user-specified options to pass to the backend for partitioning, optional
+            Passed on to `PrePartition` and `PostPartition` functions of `SubgraphProperty`
+        static_alloc : bool, default False
+            Statically allocate memory to improve speed. Memory usage may increase.
+        static_shape : bool, default False
+            Optimize for invariant input shapes between iterations. Must also
+            set static_alloc to True. Change of input shapes is still allowed
+            but slower.
+        """
+
+        # do hybrize API call
+        self.hybridize(True, backend, backend_opts, **kwargs)
+
+        # do part of forward API call
+        has_symbol, has_ndarray, ctx_set, _ = _gather_type_ctx_info([x] + list(args))
+        if has_symbol:
+            raise ValueError('Inputs must be NDArrays for the optimize_for API'
+                             ' Please check the type of the args.\n')
+        if not has_symbol and not has_ndarray:
+            raise ValueError('In HybridBlock, there must be one NDArray as input.'
+                             ' Please check the type of the args.\n')
+        if len(ctx_set) > 1:
+            raise ValueError('Find multiple contexts in the input, '
+                             'After hybridized, the HybridBlock only supports one input '
+                             'context. You can print the ele.ctx in the '
+                             'input arguments to inspect their contexts. '
+                             'Find all contexts = {}'.format(ctx_set))
+
+        self._build_cache(x, *args)
+        assert self._cached_op, "Gluon failed to build the cache. " \
+                                "This should never happen. " \
+                                "Please submit an issue on Github" \
+                                " https://github.com/apache/incubator-mxnet."
+        # do not actually call the cached_op
 
     def _clear_cached_op(self):
         self._cached_graph = ()
@@ -1039,7 +1169,32 @@ class HybridBlock(Block):
         super(HybridBlock, self).register_child(block, name)
         self._clear_cached_op()
 
-    def hybridize(self, active=True, **kwargs):
+    def hybridize(self, active=True, backend=None, backend_opts=None, **kwargs):
+        """Activates or deactivates :py:class:`HybridBlock` s recursively. Has no effect on
+        non-hybrid children.
+
+        Parameters
+        ----------
+        active : bool, default True
+            Whether to turn hybrid on or off.
+        backend : str
+            The name of backend, as registered in `SubgraphBackendRegistry`, default None
+        backend_opts : dict of user-specified options to pass to the backend for partitioning, optional
+            Passed on to `PrePartition` and `PostPartition` functions of `SubgraphProperty`
+        static_alloc : bool, default False
+            Statically allocate memory to improve speed. Memory usage may increase.
+        static_shape : bool, default False
+            Optimize for invariant input shapes between iterations. Must also
+            set static_alloc to True. Change of input shapes is still allowed
+            but slower.
+        """
+
+        self._backend = backend
+        if backend_opts is not None:
+            assert isinstance(backend_opts, dict), \
+            "HybridBlock hybridize requires backend_opts to be a dictionary."
+            self._backend_opts = backend_opts
+
         self._active = active
         self._flags = list(kwargs.items())
         self._clear_cached_op()
@@ -1071,7 +1226,20 @@ class HybridBlock(Block):
 
     def infer_shape(self, *args):
         """Infers shape of Parameters from inputs."""
-        self._infer_attrs('infer_shape', 'shape', *args)
+        if self.hybrid_forward.__func__ is not HybridBlock.hybrid_forward:
+            # Gluon 1 based on F:  hybrid_forward is defined by user
+            self._infer_attrs('infer_shape', 'shape', *args)
+        else:
+            # In Gluon 2, users must implement infer_shape, if any deferred
+            # initialized parameters are associated with the HybridBlock
+            params = [p for p in self._reg_params.values() if not shape_is_known(p.shape)]
+            if params:
+                params_str = ", ".join("{} ({})".format(p.name, p.shape) for p in params)
+                raise RuntimeError(
+                    "{name} has parameters with unknown shape. You need to either specify the shape "
+                    "in __init__ or implement {name}.infer_shape to set the parameter shapes "
+                    "based on the first input. Parameters with unknown shapes are {params}".format(
+                        name=type(self).__name__, params=params_str))
 
     def infer_type(self, *args):
         """Infers data type of Parameters from inputs."""
@@ -1091,13 +1259,21 @@ class HybridBlock(Block):
             will be created, where xxxx is the 4 digits epoch number.
         epoch : int
             Epoch number of saved model.
+
+        Returns
+        -------
+        symbol_filename : str
+            Filename to which model symbols were saved, including `path` prefix.
+        params_filename : str
+            Filename to which model parameters were saved, including `path` prefix.
         """
         if not self._cached_graph:
             raise RuntimeError(
                 "Please first call block.hybridize() and then run forward with "
                 "this block at least once before calling export.")
         sym = self._cached_graph[1]
-        sym.save('%s-symbol.json'%path, remove_amp_cast=remove_amp_cast)
+        sym_filename = '%s-symbol.json'%path
+        sym.save(sym_filename, remove_amp_cast=remove_amp_cast)
 
         arg_names = set(sym.list_arguments())
         aux_names = set(sym.list_auxiliary_states())
@@ -1109,7 +1285,9 @@ class HybridBlock(Block):
                 assert name in aux_names
                 arg_dict['aux:%s'%name] = param._reduce()
         save_fn = _mx_npx.save if is_np_array() else ndarray.save
-        save_fn('%s-%04d.params'%(path, epoch), arg_dict)
+        params_filename = '%s-%04d.params'%(path, epoch)
+        save_fn(params_filename, arg_dict)
+        return (sym_filename, params_filename)
 
     def register_op_hook(self, callback, monitor_all=False):
         """Install op hook for block recursively.
@@ -1117,15 +1295,54 @@ class HybridBlock(Block):
         Parameters
         ----------
         callback : function
-            Takes a string and a NDArrayHandle.
+            Function called to inspect the values of the intermediate outputs
+            of blocks after hybridization. It takes 3 parameters:
+            name of the tensor being inspected (str)
+            name of the operator producing or consuming that tensor (str)
+            tensor being inspected (NDArray).
         monitor_all : bool, default False
-            If true, monitor both input and output, otherwise monitor output only.
+            If True, monitor both input and output, otherwise monitor output only.
         """
-        self._callback = callback
+        def c_callback(name, op_name, array):
+            """wrapper for user callback"""
+            import ctypes
+            array = ctypes.cast(array, NDArrayHandle)
+            array = NDArray(array, writable=False)
+            name = py_str(name)
+            op_name = py_str(op_name)
+            callback(name, op_name, array)
+
+        self._callback = c_callback
         self._monitor_all = monitor_all
         for cld in self._children.values():
-            cld._callback = callback
-            cld._monitor_all = monitor_all
+            cld()._callback = c_callback
+            cld()._monitor_all = monitor_all
+
+    def __call__(self, x, *args):
+        if self.hybrid_forward.__func__ is not HybridBlock.hybrid_forward:
+            # Gluon 1 based on F:  hybrid_forward is defined by user
+            return super().__call__(x, *args)
+        else:  # Gluon 2 based on deferred compute mode
+            assert self.forward is not HybridBlock.forward, (
+                'Must either define {name}.forward or {name}.hybrid_forward. '
+                'Defining {name}.hybrid_forward is deprecated.'.format(name=type(self).__name__))
+
+            if not self._called_infer_shape_already:
+                self.infer_shape(x, *args)
+                for p in self._reg_params.values():
+                    p._finish_deferred_init()
+                self._called_infer_shape_already = True
+
+            if not self._active:
+                # Normal imperative computation of forward()
+                return super().__call__(x, *args)
+
+            if dc.is_deferred_compute():
+                # Deferred compute is already enabled. This typically means that the current
+                # HybridBlock is a child block of a HybridBlock that has been hybridized.
+                return super().__call__(x, *args)
+
+            return self._call_cached_op(x, *args)
 
     def forward(self, x, *args):
         """Defines the forward computation. Arguments can be either
@@ -1140,7 +1357,8 @@ class HybridBlock(Block):
                              ' Please check the type of the args.\n')
         if has_ndarray:
             ctx = first_ctx
-            if self._active:
+            if self._active and not dc.is_deferred_compute():
+                # Do not call CachedOp if not hybridized or inside deferred compute mode.
                 if len(ctx_set) > 1:
                     raise ValueError('Find multiple contexts in the input, '
                                      'After hybridized, the HybridBlock only supports one input '
@@ -1159,7 +1377,6 @@ class HybridBlock(Block):
                     params = {k: v.data(ctx) for k, v in self._reg_params.items()}
 
                 return self.hybrid_forward(ndarray, x, *args, **params)
-
         params = {i: j.var() for i, j in self._reg_params.items()}
         with self.name_scope():
             return self.hybrid_forward(symbol, x, *args, **params)
@@ -1332,6 +1549,10 @@ class SymbolBlock(HybridBlock):
         self._reg_params = {key[len_prefix:]: val for key, val in self._params.items()}
 
     def forward(self, x, *args):
+        if dc.is_deferred_compute():
+            raise RuntimeError('Calling a SymbolBlock from within HybridBlock '
+                               'is not yet supported in Gluon 2.')
+
         if isinstance(x, NDArray):
             with x.ctx:
                 return self._call_cached_op(x, *args)
@@ -1353,6 +1574,28 @@ class SymbolBlock(HybridBlock):
     def cast(self, dtype):
         self._clear_cached_op()
         super(SymbolBlock, self).cast(dtype)
+        if np.dtype(dtype).name == 'float16':
+            # correct BatchNorm types back to float32 due to its special requirement
+            out = self._cached_graph[1]
+            params_list = out.get_internals().list_inputs()
+            for node in params_list:
+                if node.endswith('running_var'):
+                    prefix = node[:-11]
+                    sibs = [prefix + t for t in ('running_mean', 'gamma', 'beta')]
+                    is_bn = all(p in params_list for p in sibs)
+                    if is_bn:
+                        self.params.get(node).cast('float32')
+                        for sib in sibs:
+                            self.params.get(sib).cast('float32')
+                if node.endswith('moving_var'):
+                    # another convention used
+                    prefix = node[:-10]
+                    sibs = [prefix + t for t in ('moving_mean', 'gamma', 'beta')]
+                    is_bn = all(p in params_list for p in sibs)
+                    if is_bn:
+                        self.params.get(node).cast('float32')
+                        for sib in sibs:
+                            self.params.get(sib).cast('float32')
 
     def hybrid_forward(self, F, x, *args, **kwargs):
         raise NotImplementedError

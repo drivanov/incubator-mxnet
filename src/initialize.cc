@@ -47,11 +47,11 @@ void win_err(char **err) {
         FORMAT_MESSAGE_ALLOCATE_BUFFER |
         FORMAT_MESSAGE_FROM_SYSTEM |
         FORMAT_MESSAGE_IGNORE_INSERTS,
-        NULL,
+        nullptr,
         dw,
         MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
         reinterpret_cast<char*>(err),
-        0, NULL);
+        0, nullptr);
 }
 #else
 #include <dlfcn.h>
@@ -63,7 +63,7 @@ namespace mxnet {
 static void SegfaultLogger(int sig) {
   fprintf(stderr, "\nSegmentation fault: %d\n\n", sig);
   fprintf(stderr, "%s", dmlc::StackTrace().c_str());
-  exit(-1);
+  abort();
 }
 #endif
 

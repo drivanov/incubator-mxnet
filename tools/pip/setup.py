@@ -27,7 +27,7 @@ import platform
 
 if platform.system() == 'Linux':
     sys.argv.append('--universal')
-    sys.argv.append('--plat-name=manylinux1_x86_64')
+    sys.argv.append('--plat-name=manylinux2014_x86_64')
 
 from setuptools import setup, find_packages
 from setuptools.dist import Distribution
@@ -110,11 +110,18 @@ variant = os.environ['mxnet_variant'].upper()
 if variant != 'CPU':
     package_name = 'mxnet_{0}'.format(variant.lower())
 
+def skip_markdown_comments(md):
+    lines = md.splitlines()
+    for i in range(len(lines)):
+        if lines[i].strip():
+            if not lines[i].startswith('<!--') or not lines[i].endswith('-->'):
+                return '\n'.join(lines[i:])
+
 with open('doc/PYPI_README.md') as readme_file:
-    long_description = readme_file.read()
+    long_description = skip_markdown_comments(readme_file.read())
 
 with open('doc/{0}_ADDITIONAL.md'.format(variant)) as variant_doc:
-    long_description = long_description + variant_doc.read()
+    long_description = long_description + skip_markdown_comments(variant_doc.read())
 
 # pypi only supports rst, so use pandoc to convert
 import pypandoc
@@ -126,34 +133,38 @@ libraries = []
 if variant == 'CPU':
     libraries.append('openblas')
 else:
-    if variant.startswith('CU100'):
+    if variant.startswith('CU102'):
+        libraries.append('CUDA-10.2')
+    elif variant.startswith('CU101'):
+        libraries.append('CUDA-10.1')
+    elif variant.startswith('CU100'):
         libraries.append('CUDA-10.0')
     elif variant.startswith('CU92'):
         libraries.append('CUDA-9.2')
-    elif variant.startswith('CU91'):
-        libraries.append('CUDA-9.1')
-    elif variant.startswith('CU90'):
-        libraries.append('CUDA-9.0')
-    elif variant.startswith('CU80'):
-        libraries.append('CUDA-8.0')
-    elif variant.startswith('CU75'):
-        libraries.append('CUDA-7.5')
-    if variant.endswith('MKL'):
-        libraries.append('MKLDNN')
+
+if variant != 'NATIVE':
+    libraries.append('MKLDNN')
 
 short_description += ' This version uses {0}.'.format(' and '.join(libraries))
 
 package_data = {'mxnet': [os.path.join('mxnet', os.path.basename(LIB_PATH[0]))],
                 'dmlc_tracker': []}
-if variant.endswith('MKL'):
-    if platform.system() == 'Darwin':
-        shutil.copytree(os.path.join(CURRENT_DIR, 'mxnet-build/3rdparty/mkldnn/build/install/include'),
+if variant != 'NATIVE':
+    shutil.copytree(os.path.join(CURRENT_DIR, 'mxnet-build/3rdparty/mkldnn/include'),
                     os.path.join(CURRENT_DIR, 'mxnet/include/mkldnn'))
 if platform.system() == 'Linux':
-    shutil.copy(os.path.join(os.path.dirname(LIB_PATH[0]), 'libgfortran.so.3'), os.path.join(CURRENT_DIR, 'mxnet'))
-    package_data['mxnet'].append('mxnet/libgfortran.so.3')
-    shutil.copy(os.path.join(os.path.dirname(LIB_PATH[0]), 'libquadmath.so.0'), os.path.join(CURRENT_DIR, 'mxnet'))
+    libdir, mxdir = os.path.dirname(LIB_PATH[0]), os.path.join(CURRENT_DIR, 'mxnet')
+    if os.path.exists(os.path.join(libdir, 'libgfortran.so.3')):
+        shutil.copy(os.path.join(libdir, 'libgfortran.so.3'), mxdir)
+        package_data['mxnet'].append('mxnet/libgfortran.so.3')
+    else:
+        shutil.copy(os.path.join(libdir, 'libgfortran.so.4'), mxdir)
+        package_data['mxnet'].append('mxnet/libgfortran.so.4')
+    shutil.copy(os.path.join(libdir, 'libquadmath.so.0'), mxdir)
     package_data['mxnet'].append('mxnet/libquadmath.so.0')
+    if os.path.exists(os.path.join(libdir, 'libopenblas.so.0')):
+        shutil.copy(os.path.join(libdir, 'libopenblas.so.0'), mxdir)
+        package_data['mxnet'].append('mxnet/libquadmath.so.0')
 
 # Copy licenses and notice
 for f in os.listdir('mxnet/licenses'):
@@ -187,10 +198,10 @@ setup(name=package_name,
           'Programming Language :: Other',  # R, Scala
           'Programming Language :: Perl',
           'Programming Language :: Python',
-          'Programming Language :: Python :: 2.7',
-          'Programming Language :: Python :: 3.4',
           'Programming Language :: Python :: 3.5',
           'Programming Language :: Python :: 3.6',
+          'Programming Language :: Python :: 3.7',
+          'Programming Language :: Python :: 3.8',
           'Programming Language :: Python :: Implementation :: CPython',
           'Topic :: Scientific/Engineering',
           'Topic :: Scientific/Engineering :: Artificial Intelligence',

@@ -36,6 +36,8 @@
 namespace mxnet {
 namespace op {
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-const-variable"
 static constexpr char func_equal_cpu[] = "equal_cpu";
 static constexpr char func_equal_gpu[] = "equal_gpu";
 static constexpr char func_not_equal_cpu[] = "not_equal_cpu";
@@ -48,6 +50,13 @@ static constexpr char func_greater_equal_cpu[] = "greater_equal_cpu";
 static constexpr char func_greater_equal_gpu[] = "greater_equal_gpu";
 static constexpr char func_less_equal_cpu[] = "less_equal_cpu";
 static constexpr char func_less_equal_gpu[] = "less_equal_gpu";
+static constexpr char func_logical_and_cpu[] = "logical_and_cpu";
+static constexpr char func_logical_and_gpu[] = "logical_and_gpu";
+static constexpr char func_logical_or_cpu[] = "logical_or_cpu";
+static constexpr char func_logical_or_gpu[] = "logical_or_gpu";
+static constexpr char func_logical_xor_cpu[] = "logical_xor_cpu";
+static constexpr char func_logical_xor_gpu[] = "logical_xor_gpu";
+#pragma clang diagnostic pop
 
 bool NumpyBinaryLogicOpType(const nnvm::NodeAttrs& attrs,
                             std::vector<int>* in_attrs,
@@ -95,7 +104,7 @@ struct TVMBinaryBroadcastCompute {
     values.resize(num_args);
     for (size_t i = 0; i < num_args; ++i) {
       tblobs[i] = PrependAxes(tblobs[i], ondim);
-      type_codes[i] = kArrayHandle;
+      type_codes[i] = kTVMDLTensorHandle;
       values[i].v_handle = const_cast<DLTensor*>(&(tblobs[i].dltensor()));
     }
     tvm::runtime::TVMArgs tvm_args(&values[0], &type_codes[0], tblobs.size());
@@ -131,6 +140,9 @@ MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC(greater);
 MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC(less);
 MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC(greater_equal);
 MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC(less_equal);
+MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC(logical_and);
+MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC(logical_or);
+MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC(logical_xor);
 
 #if MXNET_USE_TVM_OP
 
@@ -150,6 +162,9 @@ MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_GPU(greater);
 MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_GPU(less);
 MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_GPU(greater_equal);
 MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_GPU(less_equal);
+MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_GPU(logical_and);
+MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_GPU(logical_or);
+MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_GPU(logical_xor);
 
 #endif  // MXNET_USE_CUDA
 
@@ -167,6 +182,9 @@ MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_CPU(greater);
 MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_CPU(less);
 MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_CPU(greater_equal);
 MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_CPU(less_equal);
+MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_CPU(logical_and);
+MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_CPU(logical_or);
+MXNET_OPERATOR_REGISTER_NP_BINARY_LOGIC_CPU(logical_xor);
 
 bool NumpyBinaryScalarLogicOpType(const nnvm::NodeAttrs& attrs,
                                   std::vector<int>* in_attrs,
@@ -200,15 +218,16 @@ struct TVMBinaryBroadcastScalarCompute {
     values.resize(num_args);
 
     // input tensor setup
-    type_codes[0] = kArrayHandle;
+    type_codes[0] = kTVMDLTensorHandle;
     values[0].v_handle = const_cast<DLTensor*>(&(tblobs[0].dltensor()));
 
     // scalar param
     type_codes[1] = kDLFloat;
-    values[1].v_float64 = nnvm::get<double>(attrs.parsed);
+    const NumpyBinaryScalarParam& param = nnvm::get<NumpyBinaryScalarParam>(attrs.parsed);
+    values[1].v_float64 = param.scalar;
 
     // output tensor
-    type_codes[2] = kArrayHandle;
+    type_codes[2] = kTVMDLTensorHandle;
     values[2].v_handle = const_cast<DLTensor*>(&(tblobs[1].dltensor()));
 
     tvm::runtime::TVMArgs tvm_args(&values[0], &type_codes[0], 3);
@@ -224,9 +243,7 @@ struct TVMBinaryBroadcastScalarCompute {
   NNVM_REGISTER_OP(_npi_##name##_scalar)                                                    \
   .set_num_inputs(1)                                                                        \
   .set_num_outputs(1)                                                                       \
-  .set_attr_parser([](NodeAttrs* attrs) {                                                   \
-    attrs->parsed = std::stod(attrs->dict["scalar"]);                                       \
-  })                                                                                        \
+  .set_attr_parser(ParamParser<NumpyBinaryScalarParam>)                                     \
   .set_attr<nnvm::FListInputNames>("FListInputNames",                                       \
   [](const NodeAttrs& attrs) {                                                              \
     return std::vector<std::string>{"data"};                                                \
@@ -239,7 +256,7 @@ struct TVMBinaryBroadcastScalarCompute {
   })                                                                                        \
   .set_attr<nnvm::FGradient>("FGradient", MakeZeroGradNodes)                                \
   .add_argument("data", "NDArray-or-Symbol", "First input to the function")                 \
-  .add_argument("scalar", "float", "scalar input")
+  .add_arguments(NumpyBinaryScalarParam::__FIELDS__())
 
 MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC(equal);
 MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC(not_equal);
@@ -247,7 +264,12 @@ MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC(greater);
 MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC(less);
 MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC(greater_equal);
 MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC(less_equal);
+MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC(logical_and);
+MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC(logical_or);
+MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC(logical_xor);
 
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wunused-const-variable"
 static constexpr char func_equal_scalar_cpu[] = "equal_scalar_cpu";
 static constexpr char func_equal_scalar_gpu[] = "equal_scalar_gpu";
 static constexpr char func_not_equal_scalar_cpu[] = "not_equal_scalar_cpu";
@@ -260,6 +282,13 @@ static constexpr char func_greater_equal_scalar_cpu[] = "greater_equal_scalar_cp
 static constexpr char func_greater_equal_scalar_gpu[] = "greater_equal_scalar_gpu";
 static constexpr char func_less_equal_scalar_cpu[] = "less_equal_scalar_cpu";
 static constexpr char func_less_equal_scalar_gpu[] = "less_equal_scalar_gpu";
+static constexpr char func_logical_and_scalar_cpu[] = "logical_and_scalar_cpu";
+static constexpr char func_logical_and_scalar_gpu[] = "logical_and_scalar_gpu";
+static constexpr char func_logical_or_scalar_cpu[] = "logical_or_scalar_cpu";
+static constexpr char func_logical_or_scalar_gpu[] = "logical_or_scalar_gpu";
+static constexpr char func_logical_xor_scalar_cpu[] = "logical_xor_scalar_cpu";
+static constexpr char func_logical_xor_scalar_gpu[] = "logical_xor_scalar_gpu";
+#pragma clang diagnostic pop
 
 #if MXNET_USE_TVM_OP
 
@@ -279,14 +308,20 @@ MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_GPU(greater);
 MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_GPU(less);
 MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_GPU(greater_equal);
 MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_GPU(less_equal);
+MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_GPU(logical_and);
+MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_GPU(logical_or);
+MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_GPU(logical_xor);
 
 #endif  // MXNET_USE_CUDA
 
 #else
 
-#define MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_CPU(name)                               \
-  NNVM_REGISTER_OP(_npi_##name##_scalar)                                                       \
-  .set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::ComputeLogic<cpu, mshadow_op::np_##name>)
+#define MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_CPU(name)                                  \
+  NNVM_REGISTER_OP(_npi_##name##_scalar)                                                          \
+  .set_attr<FCompute>("FCompute<cpu>", BinaryScalarOp::ComputeLogic<cpu, mshadow_op::np_##name>)  \
+  .set_attr<FResourceRequest>("FResourceRequest", [](const NodeAttrs& n) {                        \
+    return std::vector<ResourceRequest>{ResourceRequest::kTempSpace};                             \
+  })
 
 #endif  // MXNET_USE_TVM_OP
 
@@ -296,6 +331,9 @@ MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_CPU(greater);
 MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_CPU(less);
 MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_CPU(greater_equal);
 MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_CPU(less_equal);
+MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_CPU(logical_and);
+MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_CPU(logical_or);
+MXNET_OPERATOR_REGISTER_NP_BINARY_SCALAR_LOGIC_CPU(logical_xor);
 
 }  // namespace op
 }  // namespace mxnet

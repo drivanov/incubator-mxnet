@@ -1,3 +1,6 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+#
 # Licensed to the Apache Software Foundation (ASF) under one
 # or more contributor license agreements.  See the NOTICE file
 # distributed with this work for additional information
@@ -37,7 +40,7 @@ def test_imagenet_model_performance(model_name, val_data, gpus, batch_size):
     meta_info = get_model_meta_info(model_name)
     [model_name, mean] = convert_caffe_model(model_name, meta_info)
     sym, arg_params, aux_params = mx.model.load_checkpoint(model_name, 0)
-    acc = [mx.metric.create('acc'), mx.metric.create('top_k_accuracy', top_k=5)]
+    acc = [mx.gluon.metric.create('acc'), mx.gluon.metric.create('top_k_accuracy', top_k=5)]
     if isinstance(mean, str):
         mean_args = {'mean_img':mean}
     else:

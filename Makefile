@@ -92,13 +92,18 @@ include $(DMLC_CORE)/make/dmlc.mk
 # all tge possible warning tread
 WARNFLAGS= -Wall -Wsign-compare
 CFLAGS = -DMSHADOW_FORCE_STREAM $(WARNFLAGS)
+# C++ standard
+CFLAGS+= -DDMLC_USE_CXX11=1 -DDMLC_USE_CXX11=1 -DDMLC_USE_CXX14=1
 # use old thread local implementation in DMLC-CORE
 CFLAGS += -DDMLC_MODERN_THREAD_LOCAL=0
 # disable stack trace in exception by default.
 CFLAGS += -DDMLC_LOG_STACK_TRACE_SIZE=0
+CFLAGS += -DDMLC_LOG_FATAL_THROW=1
 
 ifeq ($(DEV), 1)
-	CFLAGS += -g -Werror
+  # Excluded from Werror:
+  # 1) variables used in '#pragma omp parallel' are considered unused
+	CFLAGS += -g -Werror -Wno-error=unused-variable -Wno-error=maybe-uninitialized -Wno-error=unused-function
 	NVCCFLAGS += -Werror cross-execution-space-call
 endif
 
@@ -130,9 +135,9 @@ endif
 # -L/usr/local/lib
 
 ifeq ($(DEBUG), 1)
-	NVCCFLAGS += -std=c++11 -Xcompiler -D_FORCE_INLINES -g -G -O0 -ccbin $(CXX) $(MSHADOW_NVCCFLAGS)
+	NVCCFLAGS += -std=c++14 -Xcompiler -D_FORCE_INLINES -g -G -O0 -ccbin $(CXX) $(MSHADOW_NVCCFLAGS)
 else
-	NVCCFLAGS += -std=c++11 -Xcompiler -D_FORCE_INLINES -O3 -ccbin $(CXX) $(MSHADOW_NVCCFLAGS)
+	NVCCFLAGS += -std=c++14 -Xcompiler -D_FORCE_INLINES -O3 -ccbin $(CXX) $(MSHADOW_NVCCFLAGS)
 endif
 
 # CFLAGS for segfault logger
@@ -222,11 +227,15 @@ ifeq (,$(wildcard /lib/liblapack.a))
 ifeq (,$(wildcard /lib/liblapack.so))
 ifeq (,$(wildcard /usr/lib/liblapack.a))
 ifeq (,$(wildcard /usr/lib/liblapack.so))
+ifeq (,$(wildcard /usr/lib/x86_64-linux-gnu/liblapack.a))
+ifeq (,$(wildcard /usr/lib/x86_64-linux-gnu/liblapack.so))
 ifeq (,$(wildcard /usr/lib/liblapack.dylib))
 ifeq (,$(wildcard /usr/lib64/liblapack.a))
 ifeq (,$(wildcard /usr/lib64/liblapack.so))
 	USE_LAPACK = 0
         $(warning "USE_LAPACK disabled because libraries were not found")
+endif
+endif
 endif
 endif
 endif
@@ -455,13 +464,13 @@ ifeq ($(USE_DIST_KVSTORE), 1)
 endif
 
 .PHONY: clean all extra-packages test lint clean_all rcpplint rcppexport roxygen\
-	cython2 cython3 cython cyclean
+	cython3 cython cyclean
 
-all: lib/libmxnet.a lib/libmxnet.so $(BIN) extra-packages sample_lib
+all: lib/libmxnet.a lib/libmxnet.so $(BIN) extra-packages extension_libs
 
-SRC = $(wildcard src/*/*/*/*.cc src/*/*/*.cc src/*/*.cc src/*.cc)
+SRC = $(wildcard src/*/*/*/*/*.cc src/*/*/*/*.cc src/*/*/*.cc src/*/*.cc src/*.cc)
 OBJ = $(patsubst %.cc, build/%.o, $(SRC))
-CUSRC = $(wildcard src/*/*/*/*.cu src/*/*/*.cu src/*/*.cu src/*.cu)
+CUSRC = $(wildcard src/*/*/*/*.cu src/*/*/*/*.cu src/*/*/*.cu src/*/*.cu src/*.cu)
 CUOBJ = $(patsubst %.cu, build/%_gpu.o, $(CUSRC))
 
 ifeq ($(USE_TVM_OP), 1)
@@ -521,17 +530,28 @@ ifeq ($(USE_CUDA), 1)
 	# Make sure to add stubs as fallback in order to be able to build
 	# without full CUDA install (especially if run without nvidia-docker)
 	LDFLAGS += -L/usr/local/cuda/lib64/stubs
+	ifeq ($(USE_NVML), 1)
+		LDFLAGS += -lnvidia-ml
+		CFLAGS += -DMXNET_USE_NVML=1
+	else
+		CFLAGS += -DMXNET_USE_NVML=0
+	endif
 	ifeq ($(USE_NCCL), 1)
 		ifneq ($(USE_NCCL_PATH), NONE)
 			CFLAGS += -I$(USE_NCCL_PATH)/include
 			LDFLAGS += -L$(USE_NCCL_PATH)/lib
 		endif
+		ifdef USE_SYSTEM_CUDA
+		LDFLAGS += -lnccl_static
+		else
 		LDFLAGS += -lnccl
+		endif
 		CFLAGS += -DMXNET_USE_NCCL=1
 	else
 		CFLAGS += -DMXNET_USE_NCCL=0
 	endif
 else
+	CFLAGS += -DMXNET_USE_NVML=0
 	CFLAGS += -DMXNET_USE_NCCL=0
 endif
 
@@ -555,7 +575,7 @@ ALLX_DEP= $(ALL_DEP)
 
 build/src/%.o: src/%.cc | mkldnn
 	@mkdir -p $(@D)
-	$(CXX) -std=c++11 -c $(CFLAGS) -MMD -c $< -o $@
+	$(CXX) -std=c++17 -c $(CFLAGS) -MMD -c $< -o $@
 
 build/src/%_gpu.o: src/%.cu | mkldnn
 	@mkdir -p $(@D)
@@ -566,12 +586,12 @@ build/src/%_gpu.o: src/%.cu | mkldnn
 # Use CXX to generate dependency instead.
 build/plugin/%_gpu.o: plugin/%.cu
 	@mkdir -p $(@D)
-	$(CXX) -std=c++11 $(CFLAGS) -MM -MT build/plugin/$*_gpu.o $< >build/plugin/$*_gpu.d
+	$(CXX) -std=c++17 $(CFLAGS) -MM -MT build/plugin/$*_gpu.o $< >build/plugin/$*_gpu.d
 	$(NVCC) -c -o $@ $(NVCCFLAGS) $(CUDA_ARCH) -Xcompiler "$(CFLAGS)" $<
 
 build/plugin/%.o: plugin/%.cc | mkldnn
 	@mkdir -p $(@D)
-	$(CXX) -std=c++11 -c $(CFLAGS) -MMD -c $< -o $@
+	$(CXX) -std=c++17 -c $(CFLAGS) -MMD -c $< -o $@
 
 %_gpu.o: %.cu
 	@mkdir -p $(@D)
@@ -580,7 +600,7 @@ build/plugin/%.o: plugin/%.cc | mkldnn
 
 %.o: %.cc $(CORE_INC)
 	@mkdir -p $(@D)
-	$(CXX) -std=c++11 -c $(CFLAGS) -MMD -Isrc/operator -c $< -o $@
+	$(CXX) -std=c++17 -c $(CFLAGS) -MMD -Isrc/operator -c $< -o $@
 
 # Set install path for libmxnet.so on Mac OS
 ifeq ($(UNAME_S), Darwin)
@@ -621,7 +641,7 @@ lib/libtvm_runtime.so:
 	ls $(ROOTDIR)/lib; \
 	cd $(ROOTDIR)
 
-TVM_OP_COMPILE_OPTIONS = -o $(ROOTDIR)/lib/libtvmop.so --config $(ROOTDIR)/lib/tvmop.conf
+TVM_OP_COMPILE_OPTIONS = -o $(ROOTDIR)/lib --config $(ROOTDIR)/lib/tvmop.conf
 ifneq ($(CUDA_ARCH),)
 	TVM_OP_COMPILE_OPTIONS += --cuda-arch "$(CUDA_ARCH)"
 endif
@@ -641,11 +661,12 @@ bin/im2rec: tools/im2rec.cc $(ALLX_DEP)
 
 $(BIN) :
 	@mkdir -p $(@D)
-	$(CXX) $(CFLAGS) -std=c++11  -o $@ $(filter %.cpp %.o %.c %.a %.cc, $^) $(LDFLAGS)
+	$(CXX) $(CFLAGS) -std=c++17  -o $@ $(filter %.cpp %.o %.c %.a %.cc, $^) $(LDFLAGS)
 
 # CPP Package
 ifeq ($(USE_CPP_PACKAGE), 1)
 include cpp-package/cpp-package.mk
+CFLAGS += -DMXNET_USE_CPP_PACKAGE=1
 endif
 
 include mkldnn.mk
@@ -664,52 +685,47 @@ cpplint:
 pylint:
 	python3 -m pylint --rcfile=$(ROOTDIR)/ci/other/pylintrc --ignore-patterns=".*\.so$$,.*\.dll$$,.*\.dylib$$" python/mxnet
 
-# sample lib for MXNet extension dynamically loading custom operator
-sample_lib:
-	$(CXX) -shared -fPIC -std=c++11 example/extensions/lib_custom_op/gemm_lib.cc -o libsample_lib.so -I include/mxnet
+# MXNet extension dynamically loading libraries
+EXT_LIBS = build/libcustomop_lib.so build/libtransposecsr_lib.so build/libtransposerowsp_lib.so build/libsubgraph_lib.so build/libpass_lib.so
+ifeq ($(USE_CUDA), 1)
+        EXT_LIBS += build/libcustomop_gpu_lib.so
+endif
+extension_libs: $(EXT_LIBS)
+
+build/libcustomop_lib.so:
+	@mkdir -p $(@D)
+	$(CXX) -shared -fPIC -std=c++11 example/extensions/lib_custom_op/gemm_lib.cc -o /dev/null -I include/mxnet
+	$(CXX) -shared -fPIC -std=c++17 example/extensions/lib_custom_op/gemm_lib.cc -o $@ -I include/mxnet
+build/libtransposecsr_lib.so:
+	@mkdir -p $(@D)
+	$(CXX) -shared -fPIC -std=c++11 example/extensions/lib_custom_op/transposecsr_lib.cc -o /dev/null -I include/mxnet
+	$(CXX) -shared -fPIC -std=c++17 example/extensions/lib_custom_op/transposecsr_lib.cc -o $@ -I include/mxnet
+build/libtransposerowsp_lib.so:
+	@mkdir -p $(@D)
+	$(CXX) -shared -fPIC -std=c++11 example/extensions/lib_custom_op/transposerowsp_lib.cc -o /dev/null -I include/mxnet
+	$(CXX) -shared -fPIC -std=c++17 example/extensions/lib_custom_op/transposerowsp_lib.cc -o $@ -I include/mxnet
+build/libcustomop_gpu_lib.so:
+	@mkdir -p $(@D)
+	$(NVCC) -shared -std=c++11 -Xcompiler -fPIC example/extensions/lib_custom_op/relu_lib.cu -o /dev/null -I include/mxnet
+	$(NVCC) -shared -std=c++14 -Xcompiler -fPIC example/extensions/lib_custom_op/relu_lib.cu -o $@ -I include/mxnet
+build/libsubgraph_lib.so:
+	@mkdir -p $(@D)
+	$(CXX) -shared -fPIC -std=c++11 example/extensions/lib_subgraph/subgraph_lib.cc -o /dev/null -I include/mxnet
+	$(CXX) -shared -fPIC -std=c++17 example/extensions/lib_subgraph/subgraph_lib.cc -o $@ -I include/mxnet
+build/libpass_lib.so:
+	@mkdir -p $(@D)
+	$(CXX) -shared -fPIC -std=c++11 example/extensions/lib_pass/pass_lib.cc -o /dev/null -I include/mxnet
+	$(CXX) -shared -fPIC -std=c++17 example/extensions/lib_pass/pass_lib.cc -o $@ -I include/mxnet
 
 # Cython build
 cython:
 	cd python; $(PYTHON) setup.py build_ext --inplace --with-cython
-
-cython2:
-	cd python; python2 setup.py build_ext --inplace --with-cython
 
 cython3:
 	cd python; python3 setup.py build_ext --inplace --with-cython
 
 cyclean:
 	rm -rf python/mxnet/*/*.so python/mxnet/*/*.cpp
-
-# R related shortcuts
-rcpplint:
-	3rdparty/dmlc-core/scripts/lint.py mxnet-rcpp ${LINT_LANG} R-package/src
-
-rpkg:
-	mkdir -p R-package/inst/libs
-	cp src/io/image_recordio.h R-package/src
-	cp -rf lib/libmxnet.so R-package/inst/libs
-
-	if [ -e "lib/libtvm_runtime.so" ]; then \
-		cp -rf lib/libtvm_runtime.so R-package/inst/libs; \
-	fi
-
-	mkdir -p R-package/inst/include
-	cp -rl include/* R-package/inst/include
-	Rscript -e "if(!require(devtools)){install.packages('devtools', repo = 'https://cloud.r-project.org/')}"
-	Rscript -e "if(!require(roxygen2)||packageVersion('roxygen2') < '6.1.1'){install.packages('roxygen2', repo = 'https://cloud.r-project.org/')}"
-	Rscript -e "library(devtools); library(methods); options(repos=c(CRAN='https://cloud.r-project.org/')); install_deps(pkg='R-package', dependencies = TRUE)"
-	cp R-package/dummy.NAMESPACE R-package/NAMESPACE
-	echo "import(Rcpp)" >> R-package/NAMESPACE
-	R CMD INSTALL R-package
-	Rscript -e "require(mxnet); mxnet:::mxnet.export('R-package'); warnings()"
-	rm R-package/NAMESPACE
-	Rscript -e "devtools::document('R-package');warnings()"
-	R CMD INSTALL R-package
-
-rpkgtest:
-	Rscript -e 'require(testthat);res<-test_dir("R-package/tests/testthat");if(!testthat:::all_passed(res)){stop("Test failures", call. = FALSE)}'
-	Rscript -e 'res<-covr:::package_coverage("R-package");fileConn<-file(paste("r-package_coverage_",toString(runif(1)),".json"));writeLines(covr:::to_codecov(res), fileConn);close(fileConn)'
 
 scalaclean:
 	(cd $(ROOTDIR)/scala-package && mvn clean)
@@ -733,15 +749,15 @@ rclean:
 	$(RM) -r R-package/src/image_recordio.h R-package/NAMESPACE R-package/man R-package/R/mxnet_generated.R \
 		R-package/inst R-package/src/*.o R-package/src/*.so mxnet_*.tar.gz
 
-build/rat/apache-rat/target/apache-rat-0.13.jar:
-	mkdir -p build
-	svn co http://svn.apache.org/repos/asf/creadur/rat/tags/apache-rat-project-0.13/ build/rat; \
+build/rat/apache-rat-0.13/apache-rat-0.13.jar:
+	mkdir -p build/rat
 	cd build/rat; \
-	mvn -Dmaven.test.skip=true install;
+	wget http://mirror.metrocast.net/apache//creadur/apache-rat-0.13/apache-rat-0.13-bin.zip; \
+	unzip apache-rat-0.13-bin.zip;
 
-ratcheck: build/rat/apache-rat/target/apache-rat-0.13.jar
+ratcheck: build/rat/apache-rat-0.13/apache-rat-0.13.jar
 	exec 5>&1; \
-	RAT_JAR=build/rat/apache-rat/target/apache-rat-0.13.jar; \
+	RAT_JAR=build/rat/apache-rat-0.13/apache-rat-0.13.jar; \
 	OUTPUT=$(java -jar $(RAT_JAR) -E tests/nightly/apache_rat_license_check/rat-excludes -d .|tee >(cat - >&5)); \
     ERROR_MESSAGE="Printing headers for text files without a valid license header"; \
     echo "-------Process The Output-------"; \
@@ -762,7 +778,6 @@ clean: rclean cyclean $(EXTRA_PACKAGES_CLEAN)
 	cd $(NNVM_PATH); $(MAKE) clean; cd -
 	cd $(TVM_PATH); $(MAKE) clean; cd -
 	cd $(AMALGAMATION_PATH); $(MAKE) clean; cd -
-	$(RM) libsample_lib.so
 	$(RM) -r  $(patsubst %, %/*.d, $(EXTRA_OPERATORS)) $(patsubst %, %/*/*.d, $(EXTRA_OPERATORS))
 	$(RM) -r  $(patsubst %, %/*.o, $(EXTRA_OPERATORS)) $(patsubst %, %/*/*.o, $(EXTRA_OPERATORS))
 else
@@ -774,7 +789,6 @@ clean: rclean mkldnn_clean cyclean testclean $(EXTRA_PACKAGES_CLEAN)
 	cd $(NNVM_PATH); $(MAKE) clean; cd -
 	cd $(TVM_PATH); $(MAKE) clean; cd -
 	cd $(AMALGAMATION_PATH); $(MAKE) clean; cd -
-	$(RM) libsample_lib.so
 endif
 
 clean_all: clean

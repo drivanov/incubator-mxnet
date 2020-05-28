@@ -71,6 +71,7 @@ template<typename OP, bool negate, typename AType, typename DType, typename OTyp
 inline void Softmax(Stream<cpu> *s, DType *in, OType *out, IType *length,
                     Shape<ndim> shape, int axis, const DType temperature) {
   index_t M = shape[axis];
+  if (M == 0) return;
   index_t N = shape.Size()/M;
   Shape<ndim> stride = calc_stride(shape);
   Shape<ndim> sshape = shape;
@@ -186,6 +187,7 @@ inline void SoftmaxGrad(Stream<cpu> *s, OType *out, OType *ograd,
                         DType *igrad, IType *length, Shape<ndim> shape,
                         int axis, const DType temperature) {
   index_t M = shape[axis];
+  if (M == 0) return;
   index_t N = shape.Size()/M;
   Shape<ndim> stride = calc_stride(shape);
   Shape<ndim> sshape = shape;
@@ -402,6 +404,7 @@ inline void Softmax(Stream<gpu> *s, DType *in, OType *out, IType *length,
   const int x_bits = 7;
   const int x_size = 1 << x_bits;
   index_t M = shape[axis];
+  if (M == 0 || shape.Size() == 0) return;
   index_t N = shape.Size()/M;
   Shape<ndim> stride = calc_stride(shape);
   Shape<ndim> sshape = shape;
@@ -555,6 +558,7 @@ inline void SoftmaxGrad(Stream<gpu> *s, OType *out, OType *ograd,
   const int x_bits = 7;
   const int x_size = 1 << x_bits;
   index_t M = shape[axis];
+  if (M == 0 || shape.Size() == 0) return;
   index_t N = shape.Size()/M;
   Shape<ndim> stride = calc_stride(shape);
   Shape<ndim> sshape = shape;
@@ -612,6 +616,13 @@ struct SoftmaxParam : public dmlc::Parameter<SoftmaxParam> {
     DMLC_DECLARE_FIELD(use_length)
     .set_default(dmlc::optional<bool>(false))
     .describe("Whether to use the length input as a mask over the data input.");
+  }
+
+  bool operator==(const SoftmaxParam& other) const {
+    return this->axis == other.axis &&
+           this->temperature == other.temperature &&
+           this->dtype == other.dtype &&
+           this->use_length == other.use_length;
   }
 };
 
@@ -706,7 +717,7 @@ static inline bool SoftmaxGradOpType(const nnvm::NodeAttrs& attrs,
     }
 
     return (*out_attrs)[0] != -1 && (*in_attrs)[0] != -1 &&
-           (*out_attrs)[1] != -1 && (*in_attrs)[1] != -1;
+           (!softmax_use_length(attrs) || ((*out_attrs)[1] != -1 && (*in_attrs)[1] != -1));
   } else {
     CHECK_EQ(in_attrs->size(), 2U);
     int out_dtype = (*in_attrs)[1];
@@ -751,7 +762,7 @@ static inline std::vector<std::string> SoftmaxGradOpInputNames(const nnvm::NodeA
 
 struct SoftmaxFGradient {
   const char *op_name;
-  std::vector<nnvm::NodeEntry> operator()(const nnvm::NodePtr& n,
+  std::vector<nnvm::NodeEntry> operator()(const nnvm::ObjectPtr& n,
                                           const std::vector<nnvm::NodeEntry>& ograds) const {
     if (softmax_has_dtype_override(n->attrs) || softmax_use_length(n->attrs)) {
       return ElemwiseGradUseInOut {op_name}(n, ograds);
@@ -791,35 +802,35 @@ void SoftmaxCompute(const nnvm::NodeAttrs& attrs,
         type = inputs[1].type_flag_;
       }
       MXNET_INT32_INT64_TYPE_SWITCH(type, IType, {
-          IType* mask_ptr = nullptr;
-          if (param.use_length.value()) {
-            mask_ptr = inputs[1].dptr<IType>();
-          }
-          if (safe_acc) {
-            if (shape.ndim() == 2) {
-              Softmax<OP, negate, AType>(
-                  ctx.get_stream<xpu>(), inputs[0].dptr<DType>(),
-                  outputs[0].dptr<OType>(), mask_ptr, shape.get<2>(),
-                  axis, static_cast<DType>(temperature));
-            } else {
-              Softmax<OP, negate, AType>(
-                  ctx.get_stream<xpu>(), inputs[0].dptr<DType>(),
-                  outputs[0].dptr<OType>(), mask_ptr, shape.get<3>(),
-                  axis, static_cast<DType>(temperature));
-            }
+        IType* mask_ptr = nullptr;
+        if (param.use_length.value()) {
+          mask_ptr = inputs[1].dptr<IType>();
+        }
+        if (safe_acc) {
+          if (shape.ndim() == 2) {
+            Softmax<OP, negate, AType>(
+              ctx.get_stream<xpu>(), inputs[0].dptr<DType>(),
+              outputs[0].dptr<OType>(), mask_ptr, shape.get<2>(),
+              axis, static_cast<DType>(temperature));
           } else {
-            if (shape.ndim() == 2) {
-              Softmax<OP, negate, DType>(
-                  ctx.get_stream<xpu>(), inputs[0].dptr<DType>(),
-                  outputs[0].dptr<OType>(), mask_ptr, shape.get<2>(),
-                  axis, static_cast<DType>(temperature));
-            } else {
-              Softmax<OP, negate, DType>(
-                  ctx.get_stream<xpu>(), inputs[0].dptr<DType>(),
-                  outputs[0].dptr<OType>(), mask_ptr, shape.get<3>(),
-                  axis, static_cast<DType>(temperature));
-            }
+            Softmax<OP, negate, AType>(
+              ctx.get_stream<xpu>(), inputs[0].dptr<DType>(),
+              outputs[0].dptr<OType>(), mask_ptr, shape.get<3>(),
+              axis, static_cast<DType>(temperature));
           }
+        } else {
+          if (shape.ndim() == 2) {
+            Softmax<OP, negate, DType>(
+              ctx.get_stream<xpu>(), inputs[0].dptr<DType>(),
+              outputs[0].dptr<OType>(), mask_ptr, shape.get<2>(),
+              axis, static_cast<DType>(temperature));
+          } else {
+            Softmax<OP, negate, DType>(
+              ctx.get_stream<xpu>(), inputs[0].dptr<DType>(),
+              outputs[0].dptr<OType>(), mask_ptr, shape.get<3>(),
+              axis, static_cast<DType>(temperature));
+          }
+        }
       });
     });
   });
@@ -898,5 +909,19 @@ void SoftmaxGradCompute(const nnvm::NodeAttrs& attrs,
 
 }  // namespace op
 }  // namespace mxnet
+
+namespace std {
+template<>
+struct hash<mxnet::op::SoftmaxParam> {
+  size_t operator()(const mxnet::op::SoftmaxParam& val) {
+    size_t ret = 0;
+    ret = dmlc::HashCombine(ret, val.axis);
+    ret = dmlc::HashCombine(ret, val.temperature);
+    ret = dmlc::HashCombine(ret, val.dtype);
+    ret = dmlc::HashCombine(ret, val.use_length);
+    return ret;
+  }
+};
+}  // namespace std
 
 #endif  // MXNET_OPERATOR_NN_SOFTMAX_INL_H_

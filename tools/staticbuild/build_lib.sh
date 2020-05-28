@@ -17,6 +17,8 @@
 # specific language governing permissions and limitations
 # under the License.
 
+set -eo pipefail
+
 # This script builds the libraries of mxnet.
 make_config=make/staticbuild/${PLATFORM}_${VARIANT}.mk
 if [[ ! -f $make_config ]]; then
@@ -32,17 +34,14 @@ git submodule update --init --recursive || true
 $MAKE DEPS_PATH=$DEPS_PATH DMLCCORE
 $MAKE DEPS_PATH=$DEPS_PATH $PWD/3rdparty/tvm/nnvm/lib/libnnvm.a
 $MAKE DEPS_PATH=$DEPS_PATH PSLITE
-
-if [[ $VARIANT == *mkl ]]; then
-    $MAKE DEPS_PATH=$DEPS_PATH mkldnn
-fi
+$MAKE DEPS_PATH=$DEPS_PATH mkldnn
 
 >&2 echo "Now building mxnet..."
 $MAKE DEPS_PATH=$DEPS_PATH
 
 if [[ $PLATFORM == 'linux' ]]; then
-    cp -L /usr/lib/gcc/x86_64-linux-gnu/4.8/libgfortran.so lib/libgfortran.so.3
-    cp -L /usr/lib/x86_64-linux-gnu/libquadmath.so.0 lib/libquadmath.so.0
+    cp -L $(ldd lib/libmxnet.so | grep libgfortran |  awk '{print $3}') lib/
+    cp -L $(ldd lib/libmxnet.so | grep libquadmath |  awk '{print $3}') lib/
 fi
 
 # Print the linked objects on libmxnet.so
@@ -57,4 +56,6 @@ else
     >&2 echo "Not available"
 fi
 
-ln -s staticdeps/ deps
+if [[ ! -L deps ]]; then
+    ln -s staticdeps deps
+fi

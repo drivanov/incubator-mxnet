@@ -184,7 +184,12 @@ $env:MXNET_STORAGE_FALLBACK_LOG_VERBOSE=0
   - Values: 0(false) or 1(true) ```(default=1)```
   - If true, weight updates are performed during the communication step, if possible.
 
-## Memonger
+* MXNET_KVSTORE_SLICE_THRESHOLD
+  - Values: Int ```(default=40000)```
+  - The maximum size of an NDArray slice in terms of number of parameters.
+  - This parameter is used to slice an NDArray before synchronizing through P3Store (dist_p3).
+
+## Memory Optimizations
 
 * MXNET_BACKWARD_DO_MIRROR
   - Values: 0(false) or 1(true) ```(default=0)```
@@ -193,6 +198,10 @@ $env:MXNET_STORAGE_FALLBACK_LOG_VERBOSE=0
   - When set to `1`, during forward propagation, graph executor will `mirror` some layer's feature map and drop others, but it will re-compute this dropped feature maps when needed.
   - `MXNET_BACKWARD_DO_MIRROR=1` will save 30%~50% of device memory, but retains about 95% of running speed.
   - One extension of `mirror` in MXNet is called [memonger technology](https://arxiv.org/abs/1604.06174), it will only use O(sqrt(N)) memory at 75% running speed. Checkout the code [here](https://github.com/dmlc/mxnet-memonger).
+
+* MXNET_MEMORY_OPT
+  - Values: 0(no optimizations) or 1(highest optimization level) ```(default=0)```
+  - If set to '1', various optimizations on memory consumption will be enabled.
 
 ## Control the profiler
 
@@ -352,6 +361,14 @@ If ctypes is used, it must be `mxnet._ctypes.ndarray.NDArrayBase`.
 * MXNET_USE_MKLDNN_RNN
   - Values: 0(false) or 1(true) ```(default=1)```
   - This variable controls whether to use the MKL-DNN backend in fused RNN operator for CPU context. There are two fusion implementations of RNN operator in MXNet. The MKL-DNN implementation has a better performance than the naive one, but the latter is more stable in the backward operation currently.
+
+* MXNET_FC_TRUE_FP16
+  - Values: 0(false) or 1(true) ```(default=0)```
+  - If this variable is set to true, MXNet will perform fp16 accumulation when using cuBLAS and input datatype is set to float16. This could increase the speed of the computation, but might result in loss of accuracy. This makes this setting useful mainly for inference usecases.
+
+* MXNET_RNN_USE_WEIGHT_CACHE
+  - Values: 0(false) or 1(true) ```(default=0)```
+  - If this variable is set, MXNet will ignore the altering of the version of NDArray which is the input parameter of the RNN operator. In Gluon API, there is a `_rnn_param_concat` operator concatenating the weights and bias of RNN into a single parameter tensor that changes the version number. Since the values of the parameters are invariant in inference pass, the RNN operator could ignore the altering of the version to escape much overhead from re-initializing the parameters.
 
 Settings for Minimum Memory Usage
 ---------------------------------
